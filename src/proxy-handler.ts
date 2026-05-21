@@ -17,6 +17,8 @@ export type ProxyRequest = {
   path: string;          // pathname only
   query: string;         // raw query string, no leading "?"
   cookies: Record<string, string>;
+  body?: Buffer;         // request body for POST/PUT/PATCH/DELETE
+  requestHeaders?: Record<string, string | string[] | undefined>;
 };
 
 export type ProxyResponse = {
@@ -31,7 +33,13 @@ export type ProxyDeps = {
   assertUpstreamAllowed: (url: string) => Promise<void>;
   fetchUpstream: (
     url: string,
-    opts: { method: string; timeoutMs: number; maxBytes: number },
+    opts: {
+      method: string;
+      timeoutMs: number;
+      maxBytes: number;
+      body?: Buffer;
+      requestHeaders?: Record<string, string | string[] | undefined>;
+    },
   ) => Promise<UpstreamResponse>;
 };
 
@@ -60,8 +68,13 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
   if (!payload || payload.documentId !== site.documentId) {
     return htmlError("BAD_TOKEN", appOrigin);
   }
-  // If the token came via the query string, set the cookie and 302 to a clean URL.
-  if (queryToken && !req.cookies["__rt"]) {
+  // If the token came via the query string on a navigation, set the cookie and
+  // 302 to a clean URL. Only GET/HEAD — a 302 would drop a POST/PUT body.
+  if (
+    (req.method === "GET" || req.method === "HEAD") &&
+    queryToken &&
+    !req.cookies["__rt"]
+  ) {
     params.delete("__rt");
     const clean = req.path + (params.toString() ? `?${params.toString()}` : "");
     return {
@@ -94,9 +107,11 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
   let upstream: UpstreamResponse;
   try {
     upstream = await deps.fetchUpstream(upstreamUrl, {
-      method: req.method === "HEAD" ? "HEAD" : "GET",
+      method: req.method,
       timeoutMs: config.upstreamTimeoutMs,
       maxBytes: config.maxHtmlBytes,
+      body: req.body,
+      requestHeaders: req.requestHeaders,
     });
   } catch (e) {
     const msg = (e as Error).message ?? "";
@@ -120,6 +135,7 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
   if (upstream.statusCode >= 300 && upstream.statusCode < 400) {
     const loc = upstream.headers["location"];
     const out: Record<string, string | string[]> = { ...headers };
+    delete out["content-encoding"]; // redirect body is empty
     if (typeof loc === "string") {
       out["location"] = rewriteLocation(loc, site.targetOrigin, proxyHost);
     }
@@ -135,12 +151,14 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
       runtimeScript: buildOverlayRuntime(appOrigin),
     });
     headers["content-type"] = "text/html; charset=utf-8";
+    delete headers["content-encoding"]; // body was decompressed and rewritten
     return { status: upstream.statusCode, headers, body: rewritten };
   }
 
   // CSS — rewrite url()/@import.
   if (/text\/css/i.test(upstream.contentType) && upstream.bodyText != null) {
     headers["content-type"] = "text/css";
+    delete headers["content-encoding"]; // body was decompressed and rewritten
     return {
       status: upstream.statusCode,
       headers,

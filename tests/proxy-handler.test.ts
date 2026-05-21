@@ -92,4 +92,68 @@ describe("handleProxyRequest", () => {
     );
     expect(r.status).toBe(504);
   });
+
+  it("keeps content-encoding on a streamed passthrough response", async () => {
+    const r = await handleProxyRequest(
+      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/app.js", query: "", cookies: { __rt: goodToken } },
+      deps({
+        fetchUpstream: async () => ({
+          statusCode: 200,
+          headers: { "content-type": "application/javascript", "content-encoding": "gzip" },
+          bodyStream: Readable.from([Buffer.from([0x1f, 0x8b, 0x08])]),
+          contentType: "application/javascript",
+        }),
+      }),
+    );
+    expect(r.status).toBe(200);
+    // The body is streamed un-decompressed, so the header MUST survive or the
+    // browser parses gzip bytes as source and fails.
+    expect(r.headers["content-encoding"]).toBe("gzip");
+  });
+
+  it("drops content-encoding on a rewritten HTML response", async () => {
+    const r = await handleProxyRequest(
+      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/", query: "", cookies: { __rt: goodToken } },
+      deps({
+        fetchUpstream: async () => ({
+          statusCode: 200,
+          headers: { "content-type": "text/html", "content-encoding": "gzip" },
+          bodyText: "<html><head></head><body></body></html>",
+          contentType: "text/html",
+        }),
+      }),
+    );
+    expect(r.status).toBe(200);
+    // HTML body was decompressed and rewritten — claiming gzip would corrupt it.
+    expect(r.headers["content-encoding"]).toBeUndefined();
+  });
+
+  it("forwards the method and body for a POST request", async () => {
+    let seen: { method?: string; body?: string } = {};
+    const r = await handleProxyRequest(
+      {
+        method: "POST",
+        host: "d-aaaa1111.reviewproxy.app",
+        path: "/api/x",
+        query: "",
+        cookies: { __rt: goodToken },
+        body: Buffer.from('{"a":1}'),
+        requestHeaders: { "content-type": "application/json" },
+      },
+      deps({
+        fetchUpstream: async (_url, opts) => {
+          seen = { method: opts.method, body: opts.body?.toString() };
+          return {
+            statusCode: 200,
+            headers: { "content-type": "application/json" },
+            bodyStream: Readable.from([Buffer.from("{}")]),
+            contentType: "application/json",
+          };
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(seen.method).toBe("POST");
+    expect(seen.body).toBe('{"a":1}');
+  });
 });

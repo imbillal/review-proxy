@@ -15,13 +15,20 @@ function parseCookies(header: string | undefined): Record<string, string> {
 }
 
 export function buildServer(deps: ProxyDeps): FastifyInstance {
-  const app = Fastify({ logger: true });
+  const app = Fastify({ logger: true, bodyLimit: deps.config.maxHtmlBytes });
+
+  // Capture every request body as a raw Buffer so it can be relayed upstream
+  // unchanged, whatever the content type.
+  app.removeAllContentTypeParsers();
+  app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => {
+    done(null, body);
+  });
 
   app.get("/healthz", async () => ({ ok: true }));
 
-  // Single catch-all: every other GET/HEAD is a proxied request.
+  // Single catch-all: every other request is proxied, any HTTP method.
   app.route({
-    method: ["GET", "HEAD"],
+    method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     url: "/*",
     handler: async (req, reply) => {
       const url = new URL(req.url, "http://placeholder");
@@ -32,6 +39,8 @@ export function buildServer(deps: ProxyDeps): FastifyInstance {
           path: url.pathname,
           query: url.search.replace(/^\?/, ""),
           cookies: parseCookies(req.headers.cookie),
+          body: Buffer.isBuffer(req.body) ? req.body : undefined,
+          requestHeaders: req.headers,
         },
         deps,
       );

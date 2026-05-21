@@ -1,5 +1,5 @@
 // review-proxy/src/upstream.ts
-import { request } from "undici";
+import { request, type Dispatcher } from "undici";
 import { Readable } from "node:stream";
 import { gunzipSync, inflateSync, brotliDecompressSync } from "node:zlib";
 import { buildUpstreamHeaders } from "./headers";
@@ -9,6 +9,8 @@ export type UpstreamOptions = {
   timeoutMs: number;
   maxBytes: number;
   upstreamCookie?: string;
+  body?: Buffer;
+  requestHeaders?: Record<string, string | string[] | undefined>;
 };
 
 export type UpstreamResponse = {
@@ -33,9 +35,12 @@ function decode(buf: Buffer, encoding: string | undefined): Buffer {
 }
 
 export async function fetchUpstream(url: string, opts: UpstreamOptions): Promise<UpstreamResponse> {
+  const method = opts.method.toUpperCase();
+  const sendsBody = method !== "GET" && method !== "HEAD" && opts.body != null;
   const res = await request(url, {
-    method: opts.method as "GET" | "HEAD",
-    headers: buildUpstreamHeaders(opts.upstreamCookie),
+    method: method as Dispatcher.HttpMethod,
+    headers: buildUpstreamHeaders(opts.upstreamCookie, opts.requestHeaders),
+    body: sendsBody ? opts.body : undefined,
     // No redirect following — undici's request() does not follow redirects by
     // default, so 3xx responses pass through for the handler to rewrite Location.
     headersTimeout: opts.timeoutMs,
@@ -44,7 +49,7 @@ export async function fetchUpstream(url: string, opts: UpstreamOptions): Promise
 
   const contentType = String(res.headers["content-type"] ?? "");
 
-  if (!BUFFERED.test(contentType) || opts.method === "HEAD") {
+  if (!BUFFERED.test(contentType) || method === "HEAD") {
     return {
       statusCode: res.statusCode,
       headers: res.headers,
