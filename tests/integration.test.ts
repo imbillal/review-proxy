@@ -4,7 +4,6 @@ import http from "node:http";
 import { buildServer } from "../src/server";
 import { signProxyToken } from "../src/token";
 import { createRegistry } from "../src/registry";
-import { assertUpstreamAllowed } from "../src/ssrf";
 import { fetchUpstream } from "../src/upstream";
 
 let upstream: http.Server;
@@ -39,10 +38,13 @@ describe("review-proxy end to end", () => {
         : null),
       60_000,
     );
+    // No-op SSRF guard: the test upstream binds to 127.0.0.1, which the real
+    // assertUpstreamAllowed (correctly) blocks. The SSRF guard is covered by
+    // tests/ssrf.test.ts; this test exercises the proxy pipeline end to end.
     const app = buildServer({
       config,
       lookupSite: registry.lookup,
-      assertUpstreamAllowed,
+      assertUpstreamAllowed: async () => {},
       fetchUpstream,
     });
 

@@ -36,7 +36,8 @@ export async function fetchUpstream(url: string, opts: UpstreamOptions): Promise
   const res = await request(url, {
     method: opts.method as "GET" | "HEAD",
     headers: buildUpstreamHeaders(opts.upstreamCookie),
-    maxRedirections: 0, // manual — the handler rewrites Location
+    // No redirect following — undici's request() does not follow redirects by
+    // default, so 3xx responses pass through for the handler to rewrite Location.
     headersTimeout: opts.timeoutMs,
     bodyTimeout: opts.timeoutMs,
   });

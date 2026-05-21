@@ -16,6 +16,11 @@ describe("rewriteUrl", () => {
       .toBe("https://d-ab12cd34.reviewproxy.app/logo.png");
   });
 
+  it("rewrites a same-origin URL whose origin has an explicit port, dropping the port", () => {
+    expect(rewriteUrl("http://127.0.0.1:8080/about", "http://127.0.0.1:8080", PROXY))
+      .toBe("https://d-ab12cd34.reviewproxy.app/about");
+  });
+
   it.each(["/about", "./x", "../y", "page.html", ""])(
     "leaves relative URL %s unchanged",
     (u) => {

@@ -15,7 +15,11 @@ export function rewriteUrl(raw: string, targetOrigin: string, proxyHost: string)
   }
   if (abs.origin !== targetOrigin) return raw; // cross-origin → leave direct (§7)
   abs.protocol = "https:";
-  abs.host = proxyHost;
+  // Set hostname (not host) and clear the port: the URL "host" setter retains
+  // an existing port when the new value has none, which would leak the
+  // upstream's port (e.g. when targetOrigin is http://127.0.0.1:8080).
+  abs.hostname = proxyHost;
+  abs.port = "";
   return abs.toString();
 }
 
