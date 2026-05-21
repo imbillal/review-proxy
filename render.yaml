@@ -1,0 +1,33 @@
+# Render Blueprint — review-proxy
+# Launch: Render dashboard -> New -> Blueprint -> connect this repo.
+# Env vars marked `sync: false` are entered at launch and are not stored in git.
+#
+# NOTE: per-site subdomain routing needs a wildcard custom domain
+# (*.PROXY_DOMAIN) attached to this service. Until that is configured, only
+# the /healthz endpoint is meaningful on the default *.onrender.com host.
+services:
+  - type: web
+    name: review-proxy
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: PROXY_DOMAIN
+        sync: false
+      - key: APP_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: PROXY_TOKEN_SECRET
+        sync: false
+      - key: UPSTREAM_TIMEOUT_MS
+        value: "20000"
+      - key: MAX_HTML_BYTES
+        value: "15000000"
