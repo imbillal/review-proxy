@@ -1,0 +1,80 @@
+// review-proxy/tests/integration.test.ts
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import http from "node:http";
+import { buildServer } from "../src/server";
+import { signProxyToken } from "../src/token";
+import { createRegistry } from "../src/registry";
+import { assertUpstreamAllowed } from "../src/ssrf";
+import { fetchUpstream } from "../src/upstream";
+
+let upstream: http.Server;
+let upstreamPort: number;
+
+const config = {
+  port: 0,
+  proxyDomain: "reviewproxy.app",
+  appOrigin: "http://localhost:3000",
+  databaseUrl: "x",
+  proxyTokenSecret: "secret",
+  upstreamTimeoutMs: 5000,
+  maxHtmlBytes: 1_000_000,
+};
+
+beforeAll(async () => {
+  upstream = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/html", "x-frame-options": "DENY" });
+    res.end(`<html><head></head><body><a href="http://127.0.0.1:${upstreamPort}/about">about</a></body></html>`);
+  });
+  await new Promise<void>((r) => upstream.listen(0, r));
+  upstreamPort = (upstream.address() as { port: number }).port;
+});
+afterAll(() => new Promise<void>((r) => upstream.close(() => r())));
+
+describe("review-proxy end to end", () => {
+  it("proxies a framed site: strips XFO, rewrites links, injects runtime", async () => {
+    const targetOrigin = `http://127.0.0.1:${upstreamPort}`;
+    const registry = createRegistry(
+      async (sub) => (sub === "d-aaaa1111"
+        ? { targetOrigin, documentId: "doc1", enabled: true }
+        : null),
+      60_000,
+    );
+    const app = buildServer({
+      config,
+      lookupSite: registry.lookup,
+      assertUpstreamAllowed,
+      fetchUpstream,
+    });
+
+    const token = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "u" }, "secret");
+
+    // Token via cookie → 200 HTML.
+    const res = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: { host: "d-aaaa1111.reviewproxy.app", cookie: `__rt=${token}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-frame-options"]).toBeUndefined();
+    expect(res.body).toContain("d-aaaa1111.reviewproxy.app/about");
+    expect(res.body).toContain("pinion:ready");
+
+    // Unknown subdomain → 404.
+    const miss = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: { host: "d-nope0000.reviewproxy.app", cookie: `__rt=${token}` },
+    });
+    expect(miss.statusCode).toBe(404);
+
+    // No token → 401.
+    const noTok = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: { host: "d-aaaa1111.reviewproxy.app" },
+    });
+    expect(noTok.statusCode).toBe(401);
+
+    await app.close();
+  });
+});

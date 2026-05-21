@@ -15,4 +15,5 @@ repo, consistent with the project's separate-repos layout.
 
 ## Status
 
-Pre-implementation. The design is approved; implementation follows the plan in `docs/plans/`.
+In development. Implementation follows `docs/plans/2026-05-22-live-subdomain-proxy-implementation.md`.
+Run `npm test` for the unit + integration suite; `npm run dev` to start locally (needs `.env`).
