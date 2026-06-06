@@ -67,7 +67,25 @@ const REQUEST_HEADER_DENYLIST = new Set([
   "proxy-connection",
   "origin",
   "referer",
+  // Forwarding/infra headers injected by the edge (Cloudflare, Render, …).
+  // These leak the proxy's OWN hostname and the visitor's real IP to the
+  // upstream. Critically, multi-tenant upstreams commonly resolve the site via
+  // `x-forwarded-host || host`, so forwarding x-forwarded-host = the proxy
+  // subdomain makes them look up the wrong tenant (404). The proxy must present
+  // as a clean direct client; undici sets Host from the upstream URL itself.
+  "forwarded",
+  "via",
+  "x-real-ip",
+  "true-client-ip",
+  "cdn-loop",
 ]);
+
+// Any header in these families is also infra/forwarding noise and is dropped.
+const DENY_PREFIXES = ["x-forwarded-", "cf-", "x-render-", "render-", "x-vercel-"];
+
+function isForwardedHeader(key: string): boolean {
+  return REQUEST_HEADER_DENYLIST.has(key) || DENY_PREFIXES.some((p) => key.startsWith(p));
+}
 
 /**
  * Headers sent to the upstream site. Forwards the page's own request headers
@@ -82,7 +100,7 @@ export function buildUpstreamHeaders(
   if (requestHeaders) {
     for (const [key, value] of Object.entries(requestHeaders)) {
       const k = key.toLowerCase();
-      if (REQUEST_HEADER_DENYLIST.has(k) || value == null) continue;
+      if (isForwardedHeader(k) || value == null) continue;
       h[k] = Array.isArray(value) ? value.join(", ") : value;
     }
   }

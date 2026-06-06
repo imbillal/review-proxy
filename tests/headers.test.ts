@@ -51,4 +51,27 @@ describe("buildUpstreamHeaders", () => {
     const h = buildUpstreamHeaders("sid=abc");
     expect(h.cookie).toBe("sid=abc");
   });
+
+  it("strips edge forwarding/infra headers so they never reach the upstream", () => {
+    const h = buildUpstreamHeaders(undefined, {
+      "x-forwarded-host": "d-qo9vi8p7.proxy.billal.lol",
+      "x-forwarded-for": "1.2.3.4",
+      "x-forwarded-proto": "https",
+      "cf-connecting-ip": "1.2.3.4",
+      "cf-ray": "abc",
+      "forwarded": "for=1.2.3.4;host=d-qo9vi8p7.proxy.billal.lol",
+      "via": "1.1 cloudflare",
+      "x-real-ip": "1.2.3.4",
+      "accept-language": "en-US", // a normal header still passes through
+    });
+    expect(h["x-forwarded-host"]).toBeUndefined();
+    expect(h["x-forwarded-for"]).toBeUndefined();
+    expect(h["x-forwarded-proto"]).toBeUndefined();
+    expect(h["cf-connecting-ip"]).toBeUndefined();
+    expect(h["cf-ray"]).toBeUndefined();
+    expect(h["forwarded"]).toBeUndefined();
+    expect(h["via"]).toBeUndefined();
+    expect(h["x-real-ip"]).toBeUndefined();
+    expect(h["accept-language"]).toBe("en-US");
+  });
 });
