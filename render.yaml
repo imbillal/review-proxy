@@ -2,9 +2,21 @@
 # Launch: Render dashboard -> New -> Blueprint -> connect this repo.
 # Env vars marked `sync: false` are entered at launch and are not stored in git.
 #
-# NOTE: per-site subdomain routing needs a wildcard custom domain
-# (*.PROXY_DOMAIN) attached to this service. Until that is configured, only
-# the /healthz endpoint is meaningful on the default *.onrender.com host.
+# PREREQUISITES (operational, not in this file):
+#   1. Wildcard custom domain `*.PROXY_DOMAIN` (e.g. *.proxy.example.com)
+#      attached to this service, with Render-issued wildcard TLS. Per-site
+#      subdomain routing does NOT work until this is configured — only the
+#      /healthz endpoint is meaningful on the default *.onrender.com host.
+#   2. MongoDB Atlas Network Access must allow Render egress (add 0.0.0.0/0 or
+#      Render's static outbound IPs) so DATABASE_URL is reachable.
+#   3. The free plan cold-starts after ~15 min idle (~50s first request), which
+#      stalls the first iframe load of a review session. Use a paid instance
+#      for anything user-facing.
+#
+# DO NOT set PUBLIC_SCHEME / PUBLIC_PORT here. They exist only for local dev
+# (http + :8080). In production the proxy is reached over https on 443, and the
+# code defaults to https with no port — setting them would corrupt the
+# rewritten same-origin links injected into proxied pages.
 services:
   - type: web
     name: review-proxy
@@ -20,12 +32,17 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # Wildcard base domain, no scheme/port, e.g. proxy.example.com.
+      # Must match the wildcard custom domain attached to this service.
       - key: PROXY_DOMAIN
         sync: false
+      # Origin of the deployed web app, e.g. https://app.example.com.
       - key: APP_ORIGIN
         sync: false
       - key: DATABASE_URL
         sync: false
+      # Must be identical to PROXY_TOKEN_SECRET in the web app, or every
+      # proxy token fails verification ("Link expired").
       - key: PROXY_TOKEN_SECRET
         sync: false
       - key: UPSTREAM_TIMEOUT_MS
