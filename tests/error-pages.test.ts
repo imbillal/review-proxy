@@ -12,7 +12,6 @@ describe("errorPage", () => {
   });
 
   it("maps each known kind to the documented status", () => {
-    expect(errorPage("BAD_TOKEN", "o").status).toBe(401);
     expect(errorPage("UPSTREAM_UNREACHABLE", "o").status).toBe(502);
     expect(errorPage("UPSTREAM_TIMEOUT", "o").status).toBe(504);
     expect(errorPage("TOO_LARGE", "o").status).toBe(502);

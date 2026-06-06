@@ -1,7 +1,6 @@
 // review-proxy/src/error-pages.ts
 export type ErrorKind =
   | "UNKNOWN_SUBDOMAIN"
-  | "BAD_TOKEN"
   | "UPSTREAM_UNREACHABLE"
   | "UPSTREAM_TIMEOUT"
   | "TOO_LARGE"
@@ -9,7 +8,6 @@ export type ErrorKind =
 
 const SPEC: Record<ErrorKind, { status: number; title: string; message: string }> = {
   UNKNOWN_SUBDOMAIN: { status: 404, title: "Link unavailable", message: "This review link is not available." },
-  BAD_TOKEN: { status: 401, title: "Link expired", message: "This review link has expired." },
   UPSTREAM_UNREACHABLE: { status: 502, title: "Site unreachable", message: "Couldn't reach the site." },
   UPSTREAM_TIMEOUT: { status: 504, title: "Site too slow", message: "The site took too long to respond." },
   TOO_LARGE: { status: 502, title: "Page too large", message: "This page is too large to preview." },

@@ -1,5 +1,12 @@
 # Live Subdomain Reverse Proxy — Implementation Plan
 
+> **⚠️ Superseded in part (2026-06-06): the `__rt` access-token layer was removed.**
+> The proxy is now **open** — access is gated only by the subdomain resolving to an
+> *enabled* `ProxySite` entry (SSRF re-check stays). The token tasks/steps below
+> (`signProxyToken`/`verifyProxyToken`, `PROXY_TOKEN_SECRET`, the `__rt` query/cookie,
+> and the "Link expired"/`BAD_TOKEN` path) were implemented as written but have since
+> been deleted; ignore them. All other tasks reflect the current code.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Render arbitrary third-party websites inside the review iframe by serving them through per-site subdomains on a dedicated live reverse-proxy service, so reviewers can pin and comment on real, framed sites.
@@ -67,33 +74,33 @@ Payload JSON:
 
 ```ts
 type ProxyTokenPayload = {
-  documentId: string;
-  subdomain: string;
-  sub: string;   // reviewer userId
-  iat: number;   // unix seconds
-  exp: number;   // unix seconds; mint TTL = 2h
+	documentId: string;
+	subdomain: string;
+	sub: string; // reviewer userId
+	iat: number; // unix seconds
+	exp: number; // unix seconds; mint TTL = 2h
 };
 ```
 
-`b64url`: standard base64 with `=` stripped, `+`→`-`, `/`→`_`. Minted by `review-Web` (`signProxyToken`, Task C2); verified by `review-proxy` (`verifyProxyToken`, Task B4). Both repos share `PROXY_TOKEN_SECRET`. Verification checks: 2 parts, signature (timing-safe), parseable payload, `exp >= now`, and `subdomain` equals the subdomain the request arrived on.
+`b64url`: standard base64 with `=` stripped, `+`→`-`, `/`→`_`. Minted by `review-Web` (`signProxyToken`, Task C2); verified by `review-proxy` (`verifyProxyToken`, Task B4). signature (timing-safe), parseable payload, `exp >= now`, and `subdomain` equals the subdomain the request arrived on.
 
 ### Contract 3 — Overlay `postMessage` protocol (§9)
 
 **iframe → parent** (runtime posts to `APP_ORIGIN`):
 
-| `type` | Payload |
-|---|---|
-| `pinion:ready` | `{ width, height, pageUrl }` |
+| `type`             | Payload                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `pinion:ready`     | `{ width, height, pageUrl }`                                                                                              |
 | `pinion:positions` | `{ positions: Record<id,{x,y,visible}>, docHeight, pageUrl }` — `x`/`y` are **relative to the iframe's visible viewport** |
-| `pinion:click` | `{ selector, path, textHash, xPct, yPct, x, y, pageUrl }` — `x`/`y` viewport-relative click point |
-| `pinion:page-url` | `{ pageUrl }` |
+| `pinion:click`     | `{ selector, path, textHash, xPct, yPct, x, y, pageUrl }` — `x`/`y` viewport-relative click point                         |
+| `pinion:page-url`  | `{ pageUrl }`                                                                                                             |
 
 **parent → iframe** (parent posts to `proxyOrigin`):
 
-| `type` | Payload |
-|---|---|
+| `type`                | Payload                                                             |
+| --------------------- | ------------------------------------------------------------------- | --------- |
 | `pinion:set-comments` | `{ comments: Array<{ id, selector, path, textHash, xPct, yPct }> }` |
-| `pinion:set-mode` | `{ mode: "comment" | "read" }` |
+| `pinion:set-mode`     | `{ mode: "comment"                                                  | "read" }` |
 
 Both ends do strict origin checks: the runtime accepts only `event.origin === APP_ORIGIN`; the parent accepts only `event.origin === proxyOrigin` **and** `event.source === iframe.contentWindow`.
 
@@ -110,6 +117,7 @@ Working directory for Part A: `/Users/dorik/projects/review-platform/review_api`
 Reject private/loopback/link-local/metadata targets at registration time (§10). Pure, name- and literal-IP-based — the proxy does the DNS-resolution re-check separately (Task B5).
 
 **Files:**
+
 - Create: `review_api/src/lib/ssrf.ts`
 - Test: `review_api/tests/tests/unit/ssrf.test.ts`
 
@@ -117,42 +125,42 @@ Reject private/loopback/link-local/metadata targets at registration time (§10).
 
 ```ts
 // review_api/tests/tests/unit/ssrf.test.ts
-import { describe, expect, it } from "vitest";
-import { validateProxyTarget } from "@/lib/ssrf";
+import {describe, expect, it} from 'vitest';
+import {validateProxyTarget} from '@/lib/ssrf';
 
-describe("validateProxyTarget", () => {
-  it("accepts a normal https site and returns its origin", () => {
-    const r = validateProxyTarget("https://dorik.com/about?x=1");
-    expect(r).toEqual({ ok: true, origin: "https://dorik.com" });
-  });
+describe('validateProxyTarget', () => {
+	it('accepts a normal https site and returns its origin', () => {
+		const r = validateProxyTarget('https://dorik.com/about?x=1');
+		expect(r).toEqual({ok: true, origin: 'https://dorik.com'});
+	});
 
-  it("accepts http and keeps a non-default port in the origin", () => {
-    const r = validateProxyTarget("http://example.com:8080/x");
-    expect(r).toEqual({ ok: true, origin: "http://example.com:8080" });
-  });
+	it('accepts http and keeps a non-default port in the origin', () => {
+		const r = validateProxyTarget('http://example.com:8080/x');
+		expect(r).toEqual({ok: true, origin: 'http://example.com:8080'});
+	});
 
-  it.each([
-    ["not a url", "ftp://example.com"],
-    ["loopback name", "http://localhost/"],
-    ["loopback v4", "http://127.0.0.1/"],
-    ["0.0.0.0", "http://0.0.0.0/"],
-    ["private 10/8", "http://10.1.2.3/"],
-    ["private 192.168", "http://192.168.0.1/"],
-    ["private 172.16", "http://172.16.5.5/"],
-    ["private 172.31", "http://172.31.255.255/"],
-    ["link-local / metadata", "http://169.254.169.254/"],
-    ["ipv6 loopback", "http://[::1]/"],
-    ["ipv6 ULA", "http://[fc00::1]/"],
-    ["ipv6 link-local", "http://[fe80::1]/"],
-    ["mdns suffix", "http://printer.local/"],
-    ["garbage", "::::"],
-  ])("rejects %s", (_name, url) => {
-    expect(validateProxyTarget(url).ok).toBe(false);
-  });
+	it.each([
+		['not a url', 'ftp://example.com'],
+		['loopback name', 'http://localhost/'],
+		['loopback v4', 'http://127.0.0.1/'],
+		['0.0.0.0', 'http://0.0.0.0/'],
+		['private 10/8', 'http://10.1.2.3/'],
+		['private 192.168', 'http://192.168.0.1/'],
+		['private 172.16', 'http://172.16.5.5/'],
+		['private 172.31', 'http://172.31.255.255/'],
+		['link-local / metadata', 'http://169.254.169.254/'],
+		['ipv6 loopback', 'http://[::1]/'],
+		['ipv6 ULA', 'http://[fc00::1]/'],
+		['ipv6 link-local', 'http://[fe80::1]/'],
+		['mdns suffix', 'http://printer.local/'],
+		['garbage', '::::'],
+	])('rejects %s', (_name, url) => {
+		expect(validateProxyTarget(url).ok).toBe(false);
+	});
 
-  it("accepts 172.32 (outside the private /12)", () => {
-    expect(validateProxyTarget("http://172.32.0.1/").ok).toBe(true);
-  });
+	it('accepts 172.32 (outside the private /12)', () => {
+		expect(validateProxyTarget('http://172.32.0.1/').ok).toBe(true);
+	});
 });
 ```
 
@@ -166,53 +174,53 @@ Expected: FAIL — `Cannot find module '@/lib/ssrf'`.
 ```ts
 // review_api/src/lib/ssrf.ts
 export type ProxyTargetResult =
-  | { ok: true; origin: string }
-  | { ok: false; reason: string };
+	| {ok: true; origin: string}
+	| {ok: false; reason: string};
 
 function isPrivateIPv4(host: string): boolean {
-  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
-  if ([a, b, Number(m[3]), Number(m[4])].some((n) => n > 255)) return true; // malformed → treat unsafe
-  if (a === 0 || a === 127) return true;                 // this-host / loopback
-  if (a === 10) return true;                             // 10/8
-  if (a === 192 && b === 168) return true;               // 192.168/16
-  if (a === 172 && b >= 16 && b <= 31) return true;      // 172.16/12
-  if (a === 169 && b === 254) return true;               // link-local + metadata
-  return false;
+	const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	if (!m) return false;
+	const [a, b] = [Number(m[1]), Number(m[2])];
+	if ([a, b, Number(m[3]), Number(m[4])].some((n) => n > 255)) return true; // malformed → treat unsafe
+	if (a === 0 || a === 127) return true; // this-host / loopback
+	if (a === 10) return true; // 10/8
+	if (a === 192 && b === 168) return true; // 192.168/16
+	if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
+	if (a === 169 && b === 254) return true; // link-local + metadata
+	return false;
 }
 
 function isPrivateIPv6(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
-  if (h === "::1" || h === "::") return true;            // loopback / unspecified
-  if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;         // fc00::/7 ULA
-  if (/^fe[89ab][0-9a-f]:/.test(h)) return true;         // fe80::/10 link-local
-  return false;
+	const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+	if (h === '::1' || h === '::') return true; // loopback / unspecified
+	if (/^f[cd][0-9a-f]{2}:/.test(h)) return true; // fc00::/7 ULA
+	if (/^fe[89ab][0-9a-f]:/.test(h)) return true; // fe80::/10 link-local
+	return false;
 }
 
 /** Validate a URL submitted as a proxy target. Name- and literal-IP-based. */
 export function validateProxyTarget(rawUrl: string): ProxyTargetResult {
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return { ok: false, reason: "Not a valid URL" };
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return { ok: false, reason: "Only http and https are allowed" };
-  }
-  const host = url.hostname.toLowerCase();
-  if (!host) return { ok: false, reason: "Missing host" };
-  if (host === "localhost" || host.endsWith(".localhost")) {
-    return { ok: false, reason: "Loopback host not allowed" };
-  }
-  if (host.endsWith(".local")) {
-    return { ok: false, reason: "mDNS host not allowed" };
-  }
-  if (isPrivateIPv4(host) || isPrivateIPv6(host)) {
-    return { ok: false, reason: "Private or link-local address not allowed" };
-  }
-  return { ok: true, origin: url.origin };
+	let url: URL;
+	try {
+		url = new URL(rawUrl);
+	} catch {
+		return {ok: false, reason: 'Not a valid URL'};
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+		return {ok: false, reason: 'Only http and https are allowed'};
+	}
+	const host = url.hostname.toLowerCase();
+	if (!host) return {ok: false, reason: 'Missing host'};
+	if (host === 'localhost' || host.endsWith('.localhost')) {
+		return {ok: false, reason: 'Loopback host not allowed'};
+	}
+	if (host.endsWith('.local')) {
+		return {ok: false, reason: 'mDNS host not allowed'};
+	}
+	if (isPrivateIPv4(host) || isPrivateIPv6(host)) {
+		return {ok: false, reason: 'Private or link-local address not allowed'};
+	}
+	return {ok: true, origin: url.origin};
 }
 ```
 
@@ -236,6 +244,7 @@ git commit -m "feat: add SSRF validation for proxy targets"
 Mint an opaque DNS-safe subdomain label `d-<8 lowercase alphanumerics>` (§4.4). Uses `node:crypto` `randomInt` — no new dependency (`nanoid` is not installed and its v5 is ESM-only, which clashes with this CommonJS project).
 
 **Files:**
+
 - Create: `review_api/src/lib/subdomain.ts`
 - Test: `review_api/tests/tests/unit/subdomain.test.ts`
 
@@ -243,21 +252,21 @@ Mint an opaque DNS-safe subdomain label `d-<8 lowercase alphanumerics>` (§4.4).
 
 ```ts
 // review_api/tests/tests/unit/subdomain.test.ts
-import { describe, expect, it } from "vitest";
-import { generateSubdomain } from "@/lib/subdomain";
+import {describe, expect, it} from 'vitest';
+import {generateSubdomain} from '@/lib/subdomain';
 
-describe("generateSubdomain", () => {
-  it("matches d- followed by 8 lowercase alphanumerics", () => {
-    for (let i = 0; i < 50; i++) {
-      expect(generateSubdomain()).toMatch(/^d-[a-z0-9]{8}$/);
-    }
-  });
+describe('generateSubdomain', () => {
+	it('matches d- followed by 8 lowercase alphanumerics', () => {
+		for (let i = 0; i < 50; i++) {
+			expect(generateSubdomain()).toMatch(/^d-[a-z0-9]{8}$/);
+		}
+	});
 
-  it("is overwhelmingly likely to be unique across many calls", () => {
-    const seen = new Set<string>();
-    for (let i = 0; i < 1000; i++) seen.add(generateSubdomain());
-    expect(seen.size).toBe(1000);
-  });
+	it('is overwhelmingly likely to be unique across many calls', () => {
+		const seen = new Set<string>();
+		for (let i = 0; i < 1000; i++) seen.add(generateSubdomain());
+		expect(seen.size).toBe(1000);
+	});
 });
 ```
 
@@ -270,15 +279,15 @@ Expected: FAIL — `Cannot find module '@/lib/subdomain'`.
 
 ```ts
 // review_api/src/lib/subdomain.ts
-import { randomInt } from "node:crypto";
+import {randomInt} from 'node:crypto';
 
-const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 /** Opaque DNS-safe label, e.g. "d-ab12cd34". Collision-free in practice. */
 export function generateSubdomain(): string {
-  let s = "";
-  for (let i = 0; i < 8; i++) s += ALPHABET[randomInt(ALPHABET.length)];
-  return `d-${s}`;
+	let s = '';
+	for (let i = 0; i < 8; i++) s += ALPHABET[randomInt(ALPHABET.length)];
+	return `d-${s}`;
 }
 ```
 
@@ -301,6 +310,7 @@ git commit -m "feat: add proxy subdomain generator"
 Add the registry model (Contract 1) and the `Document` back-relation, then sync the schema.
 
 **Files:**
+
 - Modify: `review_api/prisma/schema.prisma` (Document model at lines 199-226; append new model after it)
 
 - [ ] **Step 1: Add the `proxySite` back-relation to `Document`**
@@ -363,6 +373,7 @@ git commit -m "feat: add ProxySite registry model"
 Wire SSRF validation + subdomain allocation into `POST /documents/website`, and disable the `ProxySite` when a document is soft-deleted (the app soft-deletes via `deletedAt`, so `onDelete: Cascade` never fires).
 
 **Files:**
+
 - Modify: `review_api/src/routes/documents.ts` (imports line 1-16; `/website` handler lines 204-250; `DELETE /:documentId` handler lines 352-378)
 
 - [ ] **Step 1: Add imports**
@@ -370,8 +381,8 @@ Wire SSRF validation + subdomain allocation into `POST /documents/website`, and 
 After the existing import block (after line 16), add:
 
 ```ts
-import { validateProxyTarget } from "@/lib/ssrf";
-import { generateSubdomain } from "@/lib/subdomain";
+import {validateProxyTarget} from '@/lib/ssrf';
+import {generateSubdomain} from '@/lib/subdomain';
 ```
 
 - [ ] **Step 2: SSRF-validate before creating the document**
@@ -379,10 +390,10 @@ import { generateSubdomain } from "@/lib/subdomain";
 In the `/website` handler, immediately after `const { projectId, url, title } = parsed.data;` (line 210), insert:
 
 ```ts
-    const target = validateProxyTarget(url);
-    if (!target.ok) {
-      return sendError(res, "INVALID_URL", target.reason, 422);
-    }
+const target = validateProxyTarget(url);
+if (!target.ok) {
+	return sendError(res, 'INVALID_URL', target.reason, 422);
+}
 ```
 
 - [ ] **Step 3: Create the `ProxySite` row after the document**
@@ -390,13 +401,13 @@ In the `/website` handler, immediately after `const { projectId, url, title } = 
 In the `/website` handler, immediately after the `const doc = await db.document.create({ ... });` block (after line 224, before the `try {` for capture), insert:
 
 ```ts
-    await db.proxySite.create({
-      data: {
-        documentId: doc.id,
-        subdomain: generateSubdomain(),
-        targetOrigin: target.origin,
-      },
-    });
+await db.proxySite.create({
+	data: {
+		documentId: doc.id,
+		subdomain: generateSubdomain(),
+		targetOrigin: target.origin,
+	},
+});
 ```
 
 - [ ] **Step 4: Disable the `ProxySite` on document soft-delete**
@@ -404,10 +415,10 @@ In the `/website` handler, immediately after the `const doc = await db.document.
 In the `DELETE /:documentId` handler, immediately after the `await db.document.update({ ... deletedAt: new Date() ... });` call (after line 369), insert:
 
 ```ts
-    await db.proxySite.updateMany({
-      where: { documentId: doc.id },
-      data: { enabled: false },
-    });
+await db.proxySite.updateMany({
+	where: {documentId: doc.id},
+	data: {enabled: false},
+});
 ```
 
 `updateMany` (not `update`) so it is a safe no-op for documents that never had a `ProxySite` (e.g. PDFs).
@@ -447,36 +458,37 @@ Working directory for Part B: `/Users/dorik/projects/review-platform/review-prox
 ### Task B1: Scaffold the service
 
 **Files:**
+
 - Create: `review-proxy/package.json`, `review-proxy/tsconfig.json`, `review-proxy/vitest.config.ts`, `review-proxy/.env.example`, `review-proxy/.env`
 
 - [ ] **Step 1: Create `package.json`**
 
 ```json
 {
-  "name": "review-proxy",
-  "version": "0.1.0",
-  "private": true,
-  "engines": { "node": ">=20" },
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "cheerio": "^1.2.0",
-    "dotenv": "^16.4.7",
-    "fastify": "^5.2.0",
-    "mongodb": "^6.12.0",
-    "undici": "^7.2.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.19.39",
-    "tsx": "^4.21.0",
-    "typescript": "^5.7.0",
-    "vitest": "^4.1.4"
-  }
+	"name": "review-proxy",
+	"version": "0.1.0",
+	"private": true,
+	"engines": {"node": ">=20"},
+	"scripts": {
+		"dev": "tsx watch src/index.ts",
+		"build": "tsc",
+		"start": "node dist/index.js",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"cheerio": "^1.2.0",
+		"dotenv": "^16.4.7",
+		"fastify": "^5.2.0",
+		"mongodb": "^6.12.0",
+		"undici": "^7.2.0"
+	},
+	"devDependencies": {
+		"@types/node": "^20.19.39",
+		"tsx": "^4.21.0",
+		"typescript": "^5.7.0",
+		"vitest": "^4.1.4"
+	}
 }
 ```
 
@@ -484,38 +496,38 @@ Working directory for Part B: `/Users/dorik/projects/review-platform/review-prox
 
 ```json
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022"],
-    "module": "commonjs",
-    "moduleResolution": "node",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "declaration": false,
-    "noEmit": false,
-    "outDir": "./dist",
-    "rootDir": "./src"
-  },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "tests"]
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2022"],
+		"module": "commonjs",
+		"moduleResolution": "node",
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"resolveJsonModule": true,
+		"isolatedModules": true,
+		"declaration": false,
+		"noEmit": false,
+		"outDir": "./dist",
+		"rootDir": "./src"
+	},
+	"include": ["src/**/*.ts"],
+	"exclude": ["node_modules", "dist", "tests"]
 }
 ```
 
 - [ ] **Step 3: Create `vitest.config.ts`**
 
 ```ts
-import { defineConfig } from "vitest/config";
+import {defineConfig} from 'vitest/config';
 
 export default defineConfig({
-  test: {
-    environment: "node",
-    globals: false,
-    include: ["tests/**/*.test.ts"],
-  },
+	test: {
+		environment: 'node',
+		globals: false,
+		include: ['tests/**/*.test.ts'],
+	},
 });
 ```
 
@@ -526,14 +538,11 @@ PORT=8080
 PROXY_DOMAIN=reviewproxy.app
 APP_ORIGIN=http://localhost:3000
 DATABASE_URL=
-PROXY_TOKEN_SECRET=
 UPSTREAM_TIMEOUT_MS=20000
 MAX_HTML_BYTES=15000000
 ```
 
 - [ ] **Step 5: Create a local `.env`** (git-ignored already by `.gitignore`)
-
-Copy `.env.example` to `.env` and fill `DATABASE_URL` with the shared MongoDB connection string (same as `review_api`'s `.env`) and `PROXY_TOKEN_SECRET` with any random string for now — it must equal `review-Web`'s value in Task C1.
 
 - [ ] **Step 6: Install dependencies**
 
@@ -555,6 +564,7 @@ git commit -m "chore: scaffold review-proxy service"
 Parse and validate environment variables once at startup.
 
 **Files:**
+
 - Create: `review-proxy/src/config.ts`
 - Test: `review-proxy/tests/config.test.ts`
 
@@ -562,49 +572,47 @@ Parse and validate environment variables once at startup.
 
 ```ts
 // review-proxy/tests/config.test.ts
-import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
+import {describe, expect, it} from 'vitest';
+import {loadConfig} from '../src/config';
 
 const base = {
-  PORT: "8080",
-  PROXY_DOMAIN: "reviewproxy.app",
-  APP_ORIGIN: "http://localhost:3000",
-  DATABASE_URL: "mongodb://localhost/db",
-  PROXY_TOKEN_SECRET: "secret",
-  UPSTREAM_TIMEOUT_MS: "20000",
-  MAX_HTML_BYTES: "15000000",
+	PORT: '8080',
+	PROXY_DOMAIN: 'reviewproxy.app',
+	APP_ORIGIN: 'http://localhost:3000',
+	DATABASE_URL: 'mongodb://localhost/db',
+	UPSTREAM_TIMEOUT_MS: '20000',
+	MAX_HTML_BYTES: '15000000',
 };
 
-describe("loadConfig", () => {
-  it("parses a complete environment", () => {
-    const c = loadConfig(base);
-    expect(c.port).toBe(8080);
-    expect(c.proxyDomain).toBe("reviewproxy.app");
-    expect(c.appOrigin).toBe("http://localhost:3000");
-    expect(c.upstreamTimeoutMs).toBe(20000);
-    expect(c.maxHtmlBytes).toBe(15000000);
-  });
+describe('loadConfig', () => {
+	it('parses a complete environment', () => {
+		const c = loadConfig(base);
+		expect(c.port).toBe(8080);
+		expect(c.proxyDomain).toBe('reviewproxy.app');
+		expect(c.appOrigin).toBe('http://localhost:3000');
+		expect(c.upstreamTimeoutMs).toBe(20000);
+		expect(c.maxHtmlBytes).toBe(15000000);
+	});
 
-  it("applies defaults for optional vars", () => {
-    const c = loadConfig({
-      PROXY_DOMAIN: "reviewproxy.app",
-      APP_ORIGIN: "http://localhost:3000",
-      DATABASE_URL: "mongodb://localhost/db",
-      PROXY_TOKEN_SECRET: "secret",
-    });
-    expect(c.port).toBe(8080);
-    expect(c.upstreamTimeoutMs).toBe(20000);
-    expect(c.maxHtmlBytes).toBe(15000000);
-  });
+	it('applies defaults for optional vars', () => {
+		const c = loadConfig({
+			PROXY_DOMAIN: 'reviewproxy.app',
+			APP_ORIGIN: 'http://localhost:3000',
+			DATABASE_URL: 'mongodb://localhost/db',
+		});
+		expect(c.port).toBe(8080);
+		expect(c.upstreamTimeoutMs).toBe(20000);
+		expect(c.maxHtmlBytes).toBe(15000000);
+	});
 
-  it.each(["PROXY_DOMAIN", "APP_ORIGIN", "DATABASE_URL", "PROXY_TOKEN_SECRET"])(
-    "throws when required var %s is missing",
-    (key) => {
-      const env = { ...base } as Record<string, string>;
-      delete env[key];
-      expect(() => loadConfig(env)).toThrow(key);
-    },
-  );
+	it.each(['PROXY_DOMAIN', 'APP_ORIGIN', 'DATABASE_URL'])(
+		'throws when required var %s is missing',
+		(key) => {
+			const env = {...base} as Record<string, string>;
+			delete env[key];
+			expect(() => loadConfig(env)).toThrow(key);
+		},
+	);
 });
 ```
 
@@ -618,37 +626,41 @@ Expected: FAIL — `Cannot find module '../src/config'`.
 ```ts
 // review-proxy/src/config.ts
 export type Config = {
-  port: number;
-  proxyDomain: string;
-  appOrigin: string;
-  databaseUrl: string;
-  proxyTokenSecret: string;
-  upstreamTimeoutMs: number;
-  maxHtmlBytes: number;
+	port: number;
+	proxyDomain: string;
+	appOrigin: string;
+	databaseUrl: string;
+	proxyTokenSecret: string;
+	upstreamTimeoutMs: number;
+	maxHtmlBytes: number;
 };
 
-function required(env: Record<string, string | undefined>, key: string): string {
-  const v = env[key];
-  if (!v) throw new Error(`Missing required env var: ${key}`);
-  return v;
+function required(
+	env: Record<string, string | undefined>,
+	key: string,
+): string {
+	const v = env[key];
+	if (!v) throw new Error(`Missing required env var: ${key}`);
+	return v;
 }
 
 function intOr(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+	if (!value) return fallback;
+	const n = Number(value);
+	return Number.isFinite(n) ? n : fallback;
 }
 
-export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
-  return {
-    port: intOr(env.PORT, 8080),
-    proxyDomain: required(env, "PROXY_DOMAIN").toLowerCase(),
-    appOrigin: required(env, "APP_ORIGIN").replace(/\/$/, ""),
-    databaseUrl: required(env, "DATABASE_URL"),
-    proxyTokenSecret: required(env, "PROXY_TOKEN_SECRET"),
-    upstreamTimeoutMs: intOr(env.UPSTREAM_TIMEOUT_MS, 20000),
-    maxHtmlBytes: intOr(env.MAX_HTML_BYTES, 15_000_000),
-  };
+export function loadConfig(
+	env: Record<string, string | undefined> = process.env,
+): Config {
+	return {
+		port: intOr(env.PORT, 8080),
+		proxyDomain: required(env, 'PROXY_DOMAIN').toLowerCase(),
+		appOrigin: required(env, 'APP_ORIGIN').replace(/\/$/, ''),
+		databaseUrl: required(env, 'DATABASE_URL'),
+		upstreamTimeoutMs: intOr(env.UPSTREAM_TIMEOUT_MS, 20000),
+		maxHtmlBytes: intOr(env.MAX_HTML_BYTES, 15_000_000),
+	};
 }
 ```
 
@@ -669,6 +681,7 @@ git commit -m "feat: add config loader"
 ### Task B3: Host → subdomain parsing
 
 **Files:**
+
 - Create: `review-proxy/src/subdomain.ts`
 - Test: `review-proxy/tests/subdomain.test.ts`
 
@@ -676,42 +689,50 @@ git commit -m "feat: add config loader"
 
 ```ts
 // review-proxy/tests/subdomain.test.ts
-import { describe, expect, it } from "vitest";
-import { parseSubdomain } from "../src/subdomain";
+import {describe, expect, it} from 'vitest';
+import {parseSubdomain} from '../src/subdomain';
 
-const DOMAIN = "reviewproxy.app";
+const DOMAIN = 'reviewproxy.app';
 
-describe("parseSubdomain", () => {
-  it("extracts the label from a subdomain host", () => {
-    expect(parseSubdomain("d-ab12cd34.reviewproxy.app", DOMAIN)).toBe("d-ab12cd34");
-  });
+describe('parseSubdomain', () => {
+	it('extracts the label from a subdomain host', () => {
+		expect(parseSubdomain('d-ab12cd34.reviewproxy.app', DOMAIN)).toBe(
+			'd-ab12cd34',
+		);
+	});
 
-  it("ignores a port in the Host header", () => {
-    expect(parseSubdomain("d-ab12cd34.reviewproxy.app:8080", DOMAIN)).toBe("d-ab12cd34");
-  });
+	it('ignores a port in the Host header', () => {
+		expect(parseSubdomain('d-ab12cd34.reviewproxy.app:8080', DOMAIN)).toBe(
+			'd-ab12cd34',
+		);
+	});
 
-  it("is case-insensitive", () => {
-    expect(parseSubdomain("D-AB12CD34.ReviewProxy.App", DOMAIN)).toBe("d-ab12cd34");
-  });
+	it('is case-insensitive', () => {
+		expect(parseSubdomain('D-AB12CD34.ReviewProxy.App', DOMAIN)).toBe(
+			'd-ab12cd34',
+		);
+	});
 
-  it("returns null for the apex domain", () => {
-    expect(parseSubdomain("reviewproxy.app", DOMAIN)).toBeNull();
-  });
+	it('returns null for the apex domain', () => {
+		expect(parseSubdomain('reviewproxy.app', DOMAIN)).toBeNull();
+	});
 
-  it("returns null for a foreign domain", () => {
-    expect(parseSubdomain("d-ab12cd34.evil.com", DOMAIN)).toBeNull();
-  });
+	it('returns null for a foreign domain', () => {
+		expect(parseSubdomain('d-ab12cd34.evil.com', DOMAIN)).toBeNull();
+	});
 
-  it("returns null for a multi-label subdomain", () => {
-    expect(parseSubdomain("a.b.reviewproxy.app", DOMAIN)).toBeNull();
-  });
+	it('returns null for a multi-label subdomain', () => {
+		expect(parseSubdomain('a.b.reviewproxy.app', DOMAIN)).toBeNull();
+	});
 
-  it.each(["", undefined, "d-ab12cd34..reviewproxy.app", "_x.reviewproxy.app"])(
-    "returns null for malformed host %s",
-    (host) => {
-      expect(parseSubdomain(host as string, DOMAIN)).toBeNull();
-    },
-  );
+	it.each([
+		'',
+		undefined,
+		'd-ab12cd34..reviewproxy.app',
+		'_x.reviewproxy.app',
+	])('returns null for malformed host %s', (host) => {
+		expect(parseSubdomain(host as string, DOMAIN)).toBeNull();
+	});
 });
 ```
 
@@ -725,15 +746,18 @@ Expected: FAIL — module not found.
 ```ts
 // review-proxy/src/subdomain.ts
 /** Extract the single subdomain label from a Host header, or null. */
-export function parseSubdomain(host: string | undefined, proxyDomain: string): string | null {
-  if (!host) return null;
-  const h = host.toLowerCase().split(":")[0]!; // drop port
-  const suffix = `.${proxyDomain.toLowerCase()}`;
-  if (!h.endsWith(suffix)) return null;
-  const label = h.slice(0, -suffix.length);
-  if (!label) return null;                       // apex
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(label)) return null; // single DNS label only
-  return label;
+export function parseSubdomain(
+	host: string | undefined,
+	proxyDomain: string,
+): string | null {
+	if (!host) return null;
+	const h = host.toLowerCase().split(':')[0]!; // drop port
+	const suffix = `.${proxyDomain.toLowerCase()}`;
+	if (!h.endsWith(suffix)) return null;
+	const label = h.slice(0, -suffix.length);
+	if (!label) return null; // apex
+	if (!/^[a-z0-9][a-z0-9-]*$/.test(label)) return null; // single DNS label only
+	return label;
 }
 ```
 
@@ -756,6 +780,7 @@ git commit -m "feat: add Host-to-subdomain parser"
 Implements Contract 2. `signProxyToken` is included here too — it is needed by this repo's own tests (and keeps the two repos' implementations verifiably identical).
 
 **Files:**
+
 - Create: `review-proxy/src/token.ts`
 - Test: `review-proxy/tests/token.test.ts`
 
@@ -763,41 +788,63 @@ Implements Contract 2. `signProxyToken` is included here too — it is needed by
 
 ```ts
 // review-proxy/tests/token.test.ts
-import { describe, expect, it } from "vitest";
-import { signProxyToken, verifyProxyToken } from "../src/token";
+import {describe, expect, it} from 'vitest';
+import {signProxyToken, verifyProxyToken} from '../src/token';
 
-const SECRET = "test-secret";
+const SECRET = 'test-secret';
 const NOW = 1_700_000_000;
 
-describe("proxy token", () => {
-  it("verifies a freshly signed token", () => {
-    const tok = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "user1" }, SECRET, 7200, NOW);
-    const p = verifyProxyToken(tok, SECRET, "d-aaaa1111", NOW + 10);
-    expect(p?.documentId).toBe("doc1");
-    expect(p?.sub).toBe("user1");
-  });
+describe('proxy token', () => {
+	it('verifies a freshly signed token', () => {
+		const tok = signProxyToken(
+			{documentId: 'doc1', subdomain: 'd-aaaa1111', sub: 'user1'},
+			SECRET,
+			7200,
+			NOW,
+		);
+		const p = verifyProxyToken(tok, SECRET, 'd-aaaa1111', NOW + 10);
+		expect(p?.documentId).toBe('doc1');
+		expect(p?.sub).toBe('user1');
+	});
 
-  it("rejects an expired token", () => {
-    const tok = signProxyToken({ documentId: "d", subdomain: "d-aaaa1111", sub: "u" }, SECRET, 100, NOW);
-    expect(verifyProxyToken(tok, SECRET, "d-aaaa1111", NOW + 200)).toBeNull();
-  });
+	it('rejects an expired token', () => {
+		const tok = signProxyToken(
+			{documentId: 'd', subdomain: 'd-aaaa1111', sub: 'u'},
+			SECRET,
+			100,
+			NOW,
+		);
+		expect(
+			verifyProxyToken(tok, SECRET, 'd-aaaa1111', NOW + 200),
+		).toBeNull();
+	});
 
-  it("rejects a token signed with a different secret", () => {
-    const tok = signProxyToken({ documentId: "d", subdomain: "d-aaaa1111", sub: "u" }, "other", 7200, NOW);
-    expect(verifyProxyToken(tok, SECRET, "d-aaaa1111", NOW)).toBeNull();
-  });
+	it('rejects a token signed with a different secret', () => {
+		const tok = signProxyToken(
+			{documentId: 'd', subdomain: 'd-aaaa1111', sub: 'u'},
+			'other',
+			7200,
+			NOW,
+		);
+		expect(verifyProxyToken(tok, SECRET, 'd-aaaa1111', NOW)).toBeNull();
+	});
 
-  it("rejects a subdomain mismatch", () => {
-    const tok = signProxyToken({ documentId: "d", subdomain: "d-aaaa1111", sub: "u" }, SECRET, 7200, NOW);
-    expect(verifyProxyToken(tok, SECRET, "d-bbbb2222", NOW)).toBeNull();
-  });
+	it('rejects a subdomain mismatch', () => {
+		const tok = signProxyToken(
+			{documentId: 'd', subdomain: 'd-aaaa1111', sub: 'u'},
+			SECRET,
+			7200,
+			NOW,
+		);
+		expect(verifyProxyToken(tok, SECRET, 'd-bbbb2222', NOW)).toBeNull();
+	});
 
-  it.each(["", "onlyonepart", "a.b.c", "garbage.token"])(
-    "rejects malformed token %s",
-    (tok) => {
-      expect(verifyProxyToken(tok, SECRET, "d-aaaa1111", NOW)).toBeNull();
-    },
-  );
+	it.each(['', 'onlyonepart', 'a.b.c', 'garbage.token'])(
+		'rejects malformed token %s',
+		(tok) => {
+			expect(verifyProxyToken(tok, SECRET, 'd-aaaa1111', NOW)).toBeNull();
+		},
+	);
 });
 ```
 
@@ -810,71 +857,81 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/token.ts
-import crypto from "node:crypto";
+import crypto from 'node:crypto';
 
 export type ProxyTokenPayload = {
-  documentId: string;
-  subdomain: string;
-  sub: string;
-  iat: number;
-  exp: number;
+	documentId: string;
+	subdomain: string;
+	sub: string;
+	iat: number;
+	exp: number;
 };
 
 function b64urlEncode(buf: Buffer): string {
-  return buf.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+	return buf
+		.toString('base64')
+		.replace(/=/g, '')
+		.replace(/\+/g, '-')
+		.replace(/\//g, '_');
 }
 
 function b64urlDecode(s: string): Buffer {
-  const pad = "=".repeat((4 - (s.length % 4)) % 4);
-  return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64");
+	const pad = '='.repeat((4 - (s.length % 4)) % 4);
+	return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64');
 }
 
 export function signProxyToken(
-  claims: { documentId: string; subdomain: string; sub: string },
-  secret: string,
-  ttlSeconds = 2 * 60 * 60,
-  nowSeconds: number = Math.floor(Date.now() / 1000),
+	claims: {documentId: string; subdomain: string; sub: string},
+	secret: string,
+	ttlSeconds = 2 * 60 * 60,
+	nowSeconds: number = Math.floor(Date.now() / 1000),
 ): string {
-  const payload: ProxyTokenPayload = {
-    ...claims,
-    iat: nowSeconds,
-    exp: nowSeconds + ttlSeconds,
-  };
-  const body = b64urlEncode(Buffer.from(JSON.stringify(payload), "utf8"));
-  const sig = b64urlEncode(crypto.createHmac("sha256", secret).update(body).digest());
-  return `${body}.${sig}`;
+	const payload: ProxyTokenPayload = {
+		...claims,
+		iat: nowSeconds,
+		exp: nowSeconds + ttlSeconds,
+	};
+	const body = b64urlEncode(Buffer.from(JSON.stringify(payload), 'utf8'));
+	const sig = b64urlEncode(
+		crypto.createHmac('sha256', secret).update(body).digest(),
+	);
+	return `${body}.${sig}`;
 }
 
 export function verifyProxyToken(
-  token: string,
-  secret: string,
-  expectedSubdomain: string,
-  nowSeconds: number = Math.floor(Date.now() / 1000),
+	token: string,
+	secret: string,
+	expectedSubdomain: string,
+	nowSeconds: number = Math.floor(Date.now() / 1000),
 ): ProxyTokenPayload | null {
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [body, sig] = parts as [string, string];
-  const expected = b64urlEncode(crypto.createHmac("sha256", secret).update(body).digest());
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-  let payload: ProxyTokenPayload;
-  try {
-    payload = JSON.parse(b64urlDecode(body).toString("utf8")) as ProxyTokenPayload;
-  } catch {
-    return null;
-  }
-  if (
-    typeof payload.documentId !== "string" ||
-    typeof payload.subdomain !== "string" ||
-    typeof payload.sub !== "string" ||
-    typeof payload.exp !== "number"
-  ) {
-    return null;
-  }
-  if (payload.exp < nowSeconds) return null;
-  if (payload.subdomain !== expectedSubdomain) return null;
-  return payload;
+	const parts = token.split('.');
+	if (parts.length !== 2) return null;
+	const [body, sig] = parts as [string, string];
+	const expected = b64urlEncode(
+		crypto.createHmac('sha256', secret).update(body).digest(),
+	);
+	const a = Buffer.from(sig);
+	const b = Buffer.from(expected);
+	if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+	let payload: ProxyTokenPayload;
+	try {
+		payload = JSON.parse(
+			b64urlDecode(body).toString('utf8'),
+		) as ProxyTokenPayload;
+	} catch {
+		return null;
+	}
+	if (
+		typeof payload.documentId !== 'string' ||
+		typeof payload.subdomain !== 'string' ||
+		typeof payload.sub !== 'string' ||
+		typeof payload.exp !== 'number'
+	) {
+		return null;
+	}
+	if (payload.exp < nowSeconds) return null;
+	if (payload.subdomain !== expectedSubdomain) return null;
+	return payload;
 }
 ```
 
@@ -897,6 +954,7 @@ git commit -m "feat: add proxy access token sign/verify"
 The proxy re-checks the upstream host at fetch time to defend against DNS rebinding (§5.5, §10). Reuses the literal/name rules from Part A's logic plus an actual DNS resolution.
 
 **Files:**
+
 - Create: `review-proxy/src/ssrf.ts`
 - Test: `review-proxy/tests/ssrf.test.ts`
 
@@ -904,33 +962,45 @@ The proxy re-checks the upstream host at fetch time to defend against DNS rebind
 
 ```ts
 // review-proxy/tests/ssrf.test.ts
-import { describe, expect, it } from "vitest";
-import { isPrivateAddress, assertUpstreamAllowed } from "../src/ssrf";
+import {describe, expect, it} from 'vitest';
+import {isPrivateAddress, assertUpstreamAllowed} from '../src/ssrf';
 
-describe("isPrivateAddress", () => {
-  it.each([
-    "127.0.0.1", "10.0.0.5", "192.168.1.1", "172.16.0.1", "172.31.9.9",
-    "169.254.169.254", "0.0.0.0", "::1", "fc00::1", "fe80::1",
-  ])("flags %s as private", (ip) => {
-    expect(isPrivateAddress(ip)).toBe(true);
-  });
+describe('isPrivateAddress', () => {
+	it.each([
+		'127.0.0.1',
+		'10.0.0.5',
+		'192.168.1.1',
+		'172.16.0.1',
+		'172.31.9.9',
+		'169.254.169.254',
+		'0.0.0.0',
+		'::1',
+		'fc00::1',
+		'fe80::1',
+	])('flags %s as private', (ip) => {
+		expect(isPrivateAddress(ip)).toBe(true);
+	});
 
-  it.each(["8.8.8.8", "1.1.1.1", "172.32.0.1", "2606:4700:4700::1111"])(
-    "treats %s as public",
-    (ip) => {
-      expect(isPrivateAddress(ip)).toBe(false);
-    },
-  );
+	it.each(['8.8.8.8', '1.1.1.1', '172.32.0.1', '2606:4700:4700::1111'])(
+		'treats %s as public',
+		(ip) => {
+			expect(isPrivateAddress(ip)).toBe(false);
+		},
+	);
 });
 
-describe("assertUpstreamAllowed", () => {
-  it("rejects a literal private host without resolving", async () => {
-    await expect(assertUpstreamAllowed("http://10.0.0.1/x")).rejects.toThrow();
-  });
+describe('assertUpstreamAllowed', () => {
+	it('rejects a literal private host without resolving', async () => {
+		await expect(
+			assertUpstreamAllowed('http://10.0.0.1/x'),
+		).rejects.toThrow();
+	});
 
-  it("allows a public host (resolves DNS)", async () => {
-    await expect(assertUpstreamAllowed("https://example.com/")).resolves.toBeUndefined();
-  });
+	it('allows a public host (resolves DNS)', async () => {
+		await expect(
+			assertUpstreamAllowed('https://example.com/'),
+		).resolves.toBeUndefined();
+	});
 });
 ```
 
@@ -943,54 +1013,58 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/ssrf.ts
-import { lookup } from "node:dns/promises";
+import {lookup} from 'node:dns/promises';
 
 function isPrivateIPv4(host: string): boolean {
-  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const a = Number(m[1]);
-  const b = Number(m[2]);
-  if (a === 0 || a === 127 || a === 10) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 169 && b === 254) return true;
-  return false;
+	const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	if (!m) return false;
+	const a = Number(m[1]);
+	const b = Number(m[2]);
+	if (a === 0 || a === 127 || a === 10) return true;
+	if (a === 192 && b === 168) return true;
+	if (a === 172 && b >= 16 && b <= 31) return true;
+	if (a === 169 && b === 254) return true;
+	return false;
 }
 
 function isPrivateIPv6(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
-  if (h === "::1" || h === "::") return true;
-  if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;
-  if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
-  return false;
+	const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+	if (h === '::1' || h === '::') return true;
+	if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;
+	if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
+	return false;
 }
 
 export function isPrivateAddress(host: string): boolean {
-  return isPrivateIPv4(host) || isPrivateIPv6(host);
+	return isPrivateIPv4(host) || isPrivateIPv6(host);
 }
 
 /** Throws if the URL's host is private, mDNS, or resolves to a private IP. */
 export async function assertUpstreamAllowed(rawUrl: string): Promise<void> {
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new Error("SSRF: invalid upstream URL");
-  }
-  const host = url.hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) {
-    throw new Error("SSRF: loopback/mDNS host blocked");
-  }
-  if (isPrivateAddress(host)) {
-    throw new Error("SSRF: private host blocked");
-  }
-  // DNS-rebinding defense: resolve and re-check every returned address.
-  const records = await lookup(host, { all: true });
-  for (const r of records) {
-    if (isPrivateAddress(r.address)) {
-      throw new Error("SSRF: host resolves to a private address");
-    }
-  }
+	let url: URL;
+	try {
+		url = new URL(rawUrl);
+	} catch {
+		throw new Error('SSRF: invalid upstream URL');
+	}
+	const host = url.hostname.toLowerCase();
+	if (
+		host === 'localhost' ||
+		host.endsWith('.localhost') ||
+		host.endsWith('.local')
+	) {
+		throw new Error('SSRF: loopback/mDNS host blocked');
+	}
+	if (isPrivateAddress(host)) {
+		throw new Error('SSRF: private host blocked');
+	}
+	// DNS-rebinding defense: resolve and re-check every returned address.
+	const records = await lookup(host, {all: true});
+	for (const r of records) {
+		if (isPrivateAddress(r.address)) {
+			throw new Error('SSRF: host resolves to a private address');
+		}
+	}
 }
 ```
 
@@ -1013,6 +1087,7 @@ git commit -m "feat: add SSRF re-check with DNS resolution"
 Reads `subdomain → { targetOrigin, documentId, enabled }` from the shared MongoDB (`ProxySite` collection) and caches each result for ~60s (§4.5). The cache wrapper is split from the Mongo query so the wrapper is unit-testable with an injected fetcher.
 
 **Files:**
+
 - Create: `review-proxy/src/registry.ts`
 - Test: `review-proxy/tests/registry.test.ts`
 
@@ -1020,38 +1095,42 @@ Reads `subdomain → { targetOrigin, documentId, enabled }` from the shared Mong
 
 ```ts
 // review-proxy/tests/registry.test.ts
-import { describe, expect, it, vi } from "vitest";
-import { createRegistry, type SiteRecord } from "../src/registry";
+import {describe, expect, it, vi} from 'vitest';
+import {createRegistry, type SiteRecord} from '../src/registry';
 
-const REC: SiteRecord = { targetOrigin: "https://dorik.com", documentId: "doc1", enabled: true };
+const REC: SiteRecord = {
+	targetOrigin: 'https://dorik.com',
+	documentId: 'doc1',
+	enabled: true,
+};
 
-describe("createRegistry cache", () => {
-  it("caches a hit for the TTL window", async () => {
-    const fetcher = vi.fn(async () => REC);
-    const reg = createRegistry(fetcher, 60_000);
-    expect(await reg.lookup("d-aaaa1111")).toEqual(REC);
-    expect(await reg.lookup("d-aaaa1111")).toEqual(REC);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-  });
+describe('createRegistry cache', () => {
+	it('caches a hit for the TTL window', async () => {
+		const fetcher = vi.fn(async () => REC);
+		const reg = createRegistry(fetcher, 60_000);
+		expect(await reg.lookup('d-aaaa1111')).toEqual(REC);
+		expect(await reg.lookup('d-aaaa1111')).toEqual(REC);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
 
-  it("re-fetches after the TTL expires", async () => {
-    vi.useFakeTimers();
-    const fetcher = vi.fn(async () => REC);
-    const reg = createRegistry(fetcher, 60_000);
-    await reg.lookup("d-aaaa1111");
-    vi.advanceTimersByTime(61_000);
-    await reg.lookup("d-aaaa1111");
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    vi.useRealTimers();
-  });
+	it('re-fetches after the TTL expires', async () => {
+		vi.useFakeTimers();
+		const fetcher = vi.fn(async () => REC);
+		const reg = createRegistry(fetcher, 60_000);
+		await reg.lookup('d-aaaa1111');
+		vi.advanceTimersByTime(61_000);
+		await reg.lookup('d-aaaa1111');
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		vi.useRealTimers();
+	});
 
-  it("caches a miss (null) too", async () => {
-    const fetcher = vi.fn(async () => null);
-    const reg = createRegistry(fetcher, 60_000);
-    expect(await reg.lookup("d-missing0")).toBeNull();
-    expect(await reg.lookup("d-missing0")).toBeNull();
-    expect(fetcher).toHaveBeenCalledTimes(1);
-  });
+	it('caches a miss (null) too', async () => {
+		const fetcher = vi.fn(async () => null);
+		const reg = createRegistry(fetcher, 60_000);
+		expect(await reg.lookup('d-missing0')).toBeNull();
+		expect(await reg.lookup('d-missing0')).toBeNull();
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
 });
 ```
 
@@ -1064,49 +1143,52 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/registry.ts
-import { MongoClient } from "mongodb";
+import {MongoClient} from 'mongodb';
 
 export type SiteRecord = {
-  targetOrigin: string;
-  documentId: string;
-  enabled: boolean;
+	targetOrigin: string;
+	documentId: string;
+	enabled: boolean;
 };
 
 export type Registry = {
-  lookup: (subdomain: string) => Promise<SiteRecord | null>;
+	lookup: (subdomain: string) => Promise<SiteRecord | null>;
 };
 
 type SiteFetcher = (subdomain: string) => Promise<SiteRecord | null>;
 
 /** Wrap a fetcher with a per-subdomain TTL cache (hits and misses both cached). */
 export function createRegistry(fetcher: SiteFetcher, ttlMs: number): Registry {
-  const cache = new Map<string, { value: SiteRecord | null; expiresAt: number }>();
-  return {
-    async lookup(subdomain) {
-      const hit = cache.get(subdomain);
-      if (hit && hit.expiresAt > Date.now()) return hit.value;
-      const value = await fetcher(subdomain);
-      cache.set(subdomain, { value, expiresAt: Date.now() + ttlMs });
-      return value;
-    },
-  };
+	const cache = new Map<
+		string,
+		{value: SiteRecord | null; expiresAt: number}
+	>();
+	return {
+		async lookup(subdomain) {
+			const hit = cache.get(subdomain);
+			if (hit && hit.expiresAt > Date.now()) return hit.value;
+			const value = await fetcher(subdomain);
+			cache.set(subdomain, {value, expiresAt: Date.now() + ttlMs});
+			return value;
+		},
+	};
 }
 
 /** Production fetcher: a single indexed query on the shared ProxySite collection. */
 export function createMongoFetcher(client: MongoClient): SiteFetcher {
-  const collection = client.db().collection("ProxySite");
-  return async (subdomain) => {
-    const row = await collection.findOne(
-      { subdomain },
-      { projection: { targetOrigin: 1, documentId: 1, enabled: 1 } },
-    );
-    if (!row) return null;
-    return {
-      targetOrigin: String(row.targetOrigin),
-      documentId: String(row.documentId),
-      enabled: row.enabled !== false,
-    };
-  };
+	const collection = client.db().collection('ProxySite');
+	return async (subdomain) => {
+		const row = await collection.findOne(
+			{subdomain},
+			{projection: {targetOrigin: 1, documentId: 1, enabled: 1}},
+		);
+		if (!row) return null;
+		return {
+			targetOrigin: String(row.targetOrigin),
+			documentId: String(row.documentId),
+			enabled: row.enabled !== false,
+		};
+	};
 }
 ```
 
@@ -1129,6 +1211,7 @@ git commit -m "feat: add ProxySite registry with TTL cache"
 The subdomain model means relative and absolute-path URLs already resolve to the proxy origin and need no work. Only absolute URLs naming the site's own `targetOrigin` get rewritten; cross-origin URLs are left direct (§6, §7).
 
 **Files:**
+
 - Create: `review-proxy/src/rewrite-url.ts`
 - Test: `review-proxy/tests/rewrite-url.test.ts`
 
@@ -1136,50 +1219,57 @@ The subdomain model means relative and absolute-path URLs already resolve to the
 
 ```ts
 // review-proxy/tests/rewrite-url.test.ts
-import { describe, expect, it } from "vitest";
-import { rewriteUrl, rewriteSrcset } from "../src/rewrite-url";
+import {describe, expect, it} from 'vitest';
+import {rewriteUrl, rewriteSrcset} from '../src/rewrite-url';
 
-const ORIGIN = "https://dorik.com";
-const PROXY = "d-ab12cd34.reviewproxy.app";
+const ORIGIN = 'https://dorik.com';
+const PROXY = 'd-ab12cd34.reviewproxy.app';
 
-describe("rewriteUrl", () => {
-  it("rewrites an absolute same-origin URL to the proxy host", () => {
-    expect(rewriteUrl("https://dorik.com/about?x=1", ORIGIN, PROXY))
-      .toBe("https://d-ab12cd34.reviewproxy.app/about?x=1");
-  });
+describe('rewriteUrl', () => {
+	it('rewrites an absolute same-origin URL to the proxy host', () => {
+		expect(rewriteUrl('https://dorik.com/about?x=1', ORIGIN, PROXY)).toBe(
+			'https://d-ab12cd34.reviewproxy.app/about?x=1',
+		);
+	});
 
-  it("rewrites a protocol-relative same-origin URL", () => {
-    expect(rewriteUrl("//dorik.com/logo.png", ORIGIN, PROXY))
-      .toBe("https://d-ab12cd34.reviewproxy.app/logo.png");
-  });
+	it('rewrites a protocol-relative same-origin URL', () => {
+		expect(rewriteUrl('//dorik.com/logo.png', ORIGIN, PROXY)).toBe(
+			'https://d-ab12cd34.reviewproxy.app/logo.png',
+		);
+	});
 
-  it.each(["/about", "./x", "../y", "page.html", ""])(
-    "leaves relative URL %s unchanged",
-    (u) => {
-      expect(rewriteUrl(u, ORIGIN, PROXY)).toBe(u);
-    },
-  );
+	it.each(['/about', './x', '../y', 'page.html', ''])(
+		'leaves relative URL %s unchanged',
+		(u) => {
+			expect(rewriteUrl(u, ORIGIN, PROXY)).toBe(u);
+		},
+	);
 
-  it("leaves a cross-origin URL unchanged", () => {
-    expect(rewriteUrl("https://cdn.example.com/a.js", ORIGIN, PROXY))
-      .toBe("https://cdn.example.com/a.js");
-  });
+	it('leaves a cross-origin URL unchanged', () => {
+		expect(rewriteUrl('https://cdn.example.com/a.js', ORIGIN, PROXY)).toBe(
+			'https://cdn.example.com/a.js',
+		);
+	});
 
-  it.each(["data:image/png;base64,AAAA", "mailto:a@b.com", "javascript:void 0", "#frag", "tel:+1"])(
-    "leaves non-navigational URL %s unchanged",
-    (u) => {
-      expect(rewriteUrl(u, ORIGIN, PROXY)).toBe(u);
-    },
-  );
+	it.each([
+		'data:image/png;base64,AAAA',
+		'mailto:a@b.com',
+		'javascript:void 0',
+		'#frag',
+		'tel:+1',
+	])('leaves non-navigational URL %s unchanged', (u) => {
+		expect(rewriteUrl(u, ORIGIN, PROXY)).toBe(u);
+	});
 });
 
-describe("rewriteSrcset", () => {
-  it("rewrites each candidate, preserving descriptors", () => {
-    const input = "https://dorik.com/a.jpg 1x, https://dorik.com/b.jpg 2x, /c.jpg 3x";
-    expect(rewriteSrcset(input, ORIGIN, PROXY)).toBe(
-      "https://d-ab12cd34.reviewproxy.app/a.jpg 1x, https://d-ab12cd34.reviewproxy.app/b.jpg 2x, /c.jpg 3x",
-    );
-  });
+describe('rewriteSrcset', () => {
+	it('rewrites each candidate, preserving descriptors', () => {
+		const input =
+			'https://dorik.com/a.jpg 1x, https://dorik.com/b.jpg 2x, /c.jpg 3x';
+		expect(rewriteSrcset(input, ORIGIN, PROXY)).toBe(
+			'https://d-ab12cd34.reviewproxy.app/a.jpg 1x, https://d-ab12cd34.reviewproxy.app/b.jpg 2x, /c.jpg 3x',
+		);
+	});
 });
 ```
 
@@ -1195,37 +1285,46 @@ Expected: FAIL — module not found.
 const SKIP_SCHEME = /^(data:|blob:|mailto:|tel:|javascript:|about:|#)/i;
 
 /** Rewrite one URL: same-origin absolute → proxy host; everything else unchanged. */
-export function rewriteUrl(raw: string, targetOrigin: string, proxyHost: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed || SKIP_SCHEME.test(trimmed)) return raw;
-  const isAbsolute = /^https?:\/\//i.test(trimmed) || trimmed.startsWith("//");
-  if (!isAbsolute) return raw; // relative / absolute-path: resolves to proxy already
-  let abs: URL;
-  try {
-    abs = new URL(trimmed, targetOrigin);
-  } catch {
-    return raw;
-  }
-  if (abs.origin !== targetOrigin) return raw; // cross-origin → leave direct (§7)
-  abs.protocol = "https:";
-  abs.host = proxyHost;
-  return abs.toString();
+export function rewriteUrl(
+	raw: string,
+	targetOrigin: string,
+	proxyHost: string,
+): string {
+	const trimmed = raw.trim();
+	if (!trimmed || SKIP_SCHEME.test(trimmed)) return raw;
+	const isAbsolute =
+		/^https?:\/\//i.test(trimmed) || trimmed.startsWith('//');
+	if (!isAbsolute) return raw; // relative / absolute-path: resolves to proxy already
+	let abs: URL;
+	try {
+		abs = new URL(trimmed, targetOrigin);
+	} catch {
+		return raw;
+	}
+	if (abs.origin !== targetOrigin) return raw; // cross-origin → leave direct (§7)
+	abs.protocol = 'https:';
+	abs.host = proxyHost;
+	return abs.toString();
 }
 
 /** Rewrite every candidate in a srcset attribute, preserving width/density descriptors. */
-export function rewriteSrcset(value: string, targetOrigin: string, proxyHost: string): string {
-  return value
-    .split(",")
-    .map((part) => {
-      const trimmed = part.trim();
-      if (!trimmed) return part;
-      const sp = trimmed.indexOf(" ");
-      if (sp === -1) return rewriteUrl(trimmed, targetOrigin, proxyHost);
-      const url = trimmed.slice(0, sp);
-      const descriptor = trimmed.slice(sp);
-      return rewriteUrl(url, targetOrigin, proxyHost) + descriptor;
-    })
-    .join(", ");
+export function rewriteSrcset(
+	value: string,
+	targetOrigin: string,
+	proxyHost: string,
+): string {
+	return value
+		.split(',')
+		.map((part) => {
+			const trimmed = part.trim();
+			if (!trimmed) return part;
+			const sp = trimmed.indexOf(' ');
+			if (sp === -1) return rewriteUrl(trimmed, targetOrigin, proxyHost);
+			const url = trimmed.slice(0, sp);
+			const descriptor = trimmed.slice(sp);
+			return rewriteUrl(url, targetOrigin, proxyHost) + descriptor;
+		})
+		.join(', ');
 }
 ```
 
@@ -1248,6 +1347,7 @@ git commit -m "feat: add single-URL and srcset rewriting"
 Rewrite `url(...)` and `@import` references in CSS text (used for `<style>` bodies, `style=` attributes, and standalone `.css` responses).
 
 **Files:**
+
 - Create: `review-proxy/src/css-rewrite.ts`
 - Test: `review-proxy/tests/css-rewrite.test.ts`
 
@@ -1255,32 +1355,44 @@ Rewrite `url(...)` and `@import` references in CSS text (used for `<style>` bodi
 
 ```ts
 // review-proxy/tests/css-rewrite.test.ts
-import { describe, expect, it } from "vitest";
-import { rewriteCss } from "../src/css-rewrite";
+import {describe, expect, it} from 'vitest';
+import {rewriteCss} from '../src/css-rewrite';
 
-const ORIGIN = "https://dorik.com";
-const PROXY = "d-ab12cd34.reviewproxy.app";
+const ORIGIN = 'https://dorik.com';
+const PROXY = 'd-ab12cd34.reviewproxy.app';
 
-describe("rewriteCss", () => {
-  it("rewrites a same-origin absolute url()", () => {
-    expect(rewriteCss("a{background:url(https://dorik.com/bg.png)}", ORIGIN, PROXY))
-      .toBe("a{background:url(https://d-ab12cd34.reviewproxy.app/bg.png)}");
-  });
+describe('rewriteCss', () => {
+	it('rewrites a same-origin absolute url()', () => {
+		expect(
+			rewriteCss(
+				'a{background:url(https://dorik.com/bg.png)}',
+				ORIGIN,
+				PROXY,
+			),
+		).toBe('a{background:url(https://d-ab12cd34.reviewproxy.app/bg.png)}');
+	});
 
-  it("preserves quotes in url()", () => {
-    expect(rewriteCss('a{background:url("https://dorik.com/b.png")}', ORIGIN, PROXY))
-      .toBe('a{background:url("https://d-ab12cd34.reviewproxy.app/b.png")}');
-  });
+	it('preserves quotes in url()', () => {
+		expect(
+			rewriteCss(
+				'a{background:url("https://dorik.com/b.png")}',
+				ORIGIN,
+				PROXY,
+			),
+		).toBe('a{background:url("https://d-ab12cd34.reviewproxy.app/b.png")}');
+	});
 
-  it("leaves relative and cross-origin url() unchanged", () => {
-    const css = "a{background:url(/x.png)} b{background:url(https://cdn.example.com/y.png)}";
-    expect(rewriteCss(css, ORIGIN, PROXY)).toBe(css);
-  });
+	it('leaves relative and cross-origin url() unchanged', () => {
+		const css =
+			'a{background:url(/x.png)} b{background:url(https://cdn.example.com/y.png)}';
+		expect(rewriteCss(css, ORIGIN, PROXY)).toBe(css);
+	});
 
-  it("rewrites @import", () => {
-    expect(rewriteCss('@import "https://dorik.com/t.css";', ORIGIN, PROXY))
-      .toBe('@import "https://d-ab12cd34.reviewproxy.app/t.css";');
-  });
+	it('rewrites @import', () => {
+		expect(
+			rewriteCss('@import "https://dorik.com/t.css";', ORIGIN, PROXY),
+		).toBe('@import "https://d-ab12cd34.reviewproxy.app/t.css";');
+	});
 });
 ```
 
@@ -1293,17 +1405,27 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/css-rewrite.ts
-import { rewriteUrl } from "./rewrite-url";
+import {rewriteUrl} from './rewrite-url';
 
 /** Rewrite url(...) and @import references inside a block of CSS text. */
-export function rewriteCss(css: string, targetOrigin: string, proxyHost: string): string {
-  return css
-    .replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (_m, quote: string, url: string) => {
-      return `url(${quote}${rewriteUrl(url, targetOrigin, proxyHost)}${quote})`;
-    })
-    .replace(/@import\s+(['"])([^'"]+)\1/gi, (_m, quote: string, url: string) => {
-      return `@import ${quote}${rewriteUrl(url, targetOrigin, proxyHost)}${quote}`;
-    });
+export function rewriteCss(
+	css: string,
+	targetOrigin: string,
+	proxyHost: string,
+): string {
+	return css
+		.replace(
+			/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi,
+			(_m, quote: string, url: string) => {
+				return `url(${quote}${rewriteUrl(url, targetOrigin, proxyHost)}${quote})`;
+			},
+		)
+		.replace(
+			/@import\s+(['"])([^'"]+)\1/gi,
+			(_m, quote: string, url: string) => {
+				return `@import ${quote}${rewriteUrl(url, targetOrigin, proxyHost)}${quote}`;
+			},
+		);
 }
 ```
 
@@ -1326,6 +1448,7 @@ git commit -m "feat: add CSS url() and @import rewriting"
 Vendor the `postMessage` overlay runtime from `review_api/src/lib/overlay-runtime.ts`, adapted for the subdomain proxy: viewport-relative pin coordinates (Contract 3), strict origin checks, and `window.open`/`target=_blank` interception (§8). Plus a small best-effort frame-bust neutralizer (§6).
 
 **Files:**
+
 - Create: `review-proxy/src/overlay-runtime.ts`
 
 This task has no unit test — it produces browser-side script strings exercised by the Task B14 integration test and Task C5 E2E.
@@ -1340,7 +1463,7 @@ This task has no unit test — it produces browser-side script strings exercised
 
 /** Returns the IIFE source with the parent app origin baked in. */
 export function buildOverlayRuntime(appOrigin: string): string {
-  return `
+	return `
 (function(){
   var APP_ORIGIN = ${JSON.stringify(appOrigin)};
   if (!window.parent || window.parent === window) return;
@@ -1521,6 +1644,7 @@ git commit -m "feat: vendor overlay runtime and frame-bust script"
 cheerio-based: rewrite same-origin absolute URLs across the §6 attribute table, rewrite CSS in `<style>`/`style=`, strip `integrity` and CSP/XFO `<meta>` tags, inject the frame-bust script at the start of `<head>` and the overlay runtime before `</body>`.
 
 **Files:**
+
 - Create: `review-proxy/src/html-rewrite.ts`
 - Test: `review-proxy/tests/html-rewrite.test.ts`
 
@@ -1528,63 +1652,73 @@ cheerio-based: rewrite same-origin absolute URLs across the §6 attribute table,
 
 ```ts
 // review-proxy/tests/html-rewrite.test.ts
-import { describe, expect, it } from "vitest";
-import { rewriteHtml } from "../src/html-rewrite";
+import {describe, expect, it} from 'vitest';
+import {rewriteHtml} from '../src/html-rewrite';
 
 const OPTS = {
-  targetOrigin: "https://dorik.com",
-  proxyHost: "d-ab12cd34.reviewproxy.app",
-  frameBustScript: "/*fb*/",
-  runtimeScript: "/*rt*/",
+	targetOrigin: 'https://dorik.com',
+	proxyHost: 'd-ab12cd34.reviewproxy.app',
+	frameBustScript: '/*fb*/',
+	runtimeScript: '/*rt*/',
 };
 
-describe("rewriteHtml", () => {
-  it("rewrites same-origin absolute hrefs and leaves relative ones", () => {
-    const out = rewriteHtml(
-      `<html><body><a href="https://dorik.com/about">a</a><a href="/x">b</a></body></html>`,
-      OPTS,
-    );
-    expect(out).toContain('href="https://d-ab12cd34.reviewproxy.app/about"');
-    expect(out).toContain('href="/x"');
-  });
+describe('rewriteHtml', () => {
+	it('rewrites same-origin absolute hrefs and leaves relative ones', () => {
+		const out = rewriteHtml(
+			`<html><body><a href="https://dorik.com/about">a</a><a href="/x">b</a></body></html>`,
+			OPTS,
+		);
+		expect(out).toContain(
+			'href="https://d-ab12cd34.reviewproxy.app/about"',
+		);
+		expect(out).toContain('href="/x"');
+	});
 
-  it("leaves cross-origin asset URLs direct", () => {
-    const out = rewriteHtml(`<body><img src="https://cdn.example.com/a.png"></body>`, OPTS);
-    expect(out).toContain('src="https://cdn.example.com/a.png"');
-  });
+	it('leaves cross-origin asset URLs direct', () => {
+		const out = rewriteHtml(
+			`<body><img src="https://cdn.example.com/a.png"></body>`,
+			OPTS,
+		);
+		expect(out).toContain('src="https://cdn.example.com/a.png"');
+	});
 
-  it("rewrites srcset candidates", () => {
-    const out = rewriteHtml(
-      `<body><img srcset="https://dorik.com/a.png 1x, /b.png 2x"></body>`,
-      OPTS,
-    );
-    expect(out).toContain("https://d-ab12cd34.reviewproxy.app/a.png 1x");
-  });
+	it('rewrites srcset candidates', () => {
+		const out = rewriteHtml(
+			`<body><img srcset="https://dorik.com/a.png 1x, /b.png 2x"></body>`,
+			OPTS,
+		);
+		expect(out).toContain('https://d-ab12cd34.reviewproxy.app/a.png 1x');
+	});
 
-  it("strips integrity and CSP/XFO meta tags", () => {
-    const out = rewriteHtml(
-      `<head><meta http-equiv="Content-Security-Policy" content="x">` +
-        `<script src="/a.js" integrity="sha256-xxx"></script></head><body></body>`,
-      OPTS,
-    );
-    expect(out).not.toContain("integrity");
-    expect(out.toLowerCase()).not.toContain("content-security-policy");
-  });
+	it('strips integrity and CSP/XFO meta tags', () => {
+		const out = rewriteHtml(
+			`<head><meta http-equiv="Content-Security-Policy" content="x">` +
+				`<script src="/a.js" integrity="sha256-xxx"></script></head><body></body>`,
+			OPTS,
+		);
+		expect(out).not.toContain('integrity');
+		expect(out.toLowerCase()).not.toContain('content-security-policy');
+	});
 
-  it("injects the frame-bust script into head and the runtime into body", () => {
-    const out = rewriteHtml(`<html><head></head><body></body></html>`, OPTS);
-    expect(out).toContain("/*fb*/");
-    expect(out).toContain("/*rt*/");
-    expect(out.indexOf("/*rt*/")).toBeGreaterThan(out.indexOf("</body".length > 0 ? "" : ""));
-  });
+	it('injects the frame-bust script into head and the runtime into body', () => {
+		const out = rewriteHtml(
+			`<html><head></head><body></body></html>`,
+			OPTS,
+		);
+		expect(out).toContain('/*fb*/');
+		expect(out).toContain('/*rt*/');
+		expect(out.indexOf('/*rt*/')).toBeGreaterThan(
+			out.indexOf('</body'.length > 0 ? '' : ''),
+		);
+	});
 
-  it("rewrites url() in a <style> body", () => {
-    const out = rewriteHtml(
-      `<head><style>a{background:url(https://dorik.com/bg.png)}</style></head><body></body>`,
-      OPTS,
-    );
-    expect(out).toContain("https://d-ab12cd34.reviewproxy.app/bg.png");
-  });
+	it('rewrites url() in a <style> body', () => {
+		const out = rewriteHtml(
+			`<head><style>a{background:url(https://dorik.com/bg.png)}</style></head><body></body>`,
+			OPTS,
+		);
+		expect(out).toContain('https://d-ab12cd34.reviewproxy.app/bg.png');
+	});
 });
 ```
 
@@ -1597,94 +1731,107 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/html-rewrite.ts
-import * as cheerio from "cheerio";
-import { rewriteUrl, rewriteSrcset } from "./rewrite-url";
-import { rewriteCss } from "./css-rewrite";
+import * as cheerio from 'cheerio';
+import {rewriteUrl, rewriteSrcset} from './rewrite-url';
+import {rewriteCss} from './css-rewrite';
 
 export type RewriteHtmlOptions = {
-  targetOrigin: string;
-  proxyHost: string;
-  frameBustScript: string;
-  runtimeScript: string;
+	targetOrigin: string;
+	proxyHost: string;
+	frameBustScript: string;
+	runtimeScript: string;
 };
 
 // [selector, attribute] pairs for plain URL attributes.
 const URL_ATTRS: ReadonlyArray<readonly [string, string]> = [
-  ["a[href]", "href"], ["link[href]", "href"], ["area[href]", "href"],
-  ["img[src]", "src"], ["script[src]", "src"], ["iframe[src]", "src"],
-  ["source[src]", "src"], ["video[src]", "src"], ["audio[src]", "src"],
-  ["track[src]", "src"], ["embed[src]", "src"],
-  ["video[poster]", "poster"], ["form[action]", "action"],
-  ["button[formaction]", "formaction"], ["input[formaction]", "formaction"],
-  ["object[data]", "data"],
+	['a[href]', 'href'],
+	['link[href]', 'href'],
+	['area[href]', 'href'],
+	['img[src]', 'src'],
+	['script[src]', 'src'],
+	['iframe[src]', 'src'],
+	['source[src]', 'src'],
+	['video[src]', 'src'],
+	['audio[src]', 'src'],
+	['track[src]', 'src'],
+	['embed[src]', 'src'],
+	['video[poster]', 'poster'],
+	['form[action]', 'action'],
+	['button[formaction]', 'formaction'],
+	['input[formaction]', 'formaction'],
+	['object[data]', 'data'],
 ];
 
 export function rewriteHtml(html: string, opts: RewriteHtmlOptions): string {
-  const { targetOrigin, proxyHost, frameBustScript, runtimeScript } = opts;
-  const $ = cheerio.load(html);
-  const rw = (u: string) => rewriteUrl(u, targetOrigin, proxyHost);
+	const {targetOrigin, proxyHost, frameBustScript, runtimeScript} = opts;
+	const $ = cheerio.load(html);
+	const rw = (u: string) => rewriteUrl(u, targetOrigin, proxyHost);
 
-  for (const [selector, attr] of URL_ATTRS) {
-    $(selector).each((_, el) => {
-      const v = $(el).attr(attr);
-      if (v != null) $(el).attr(attr, rw(v));
-    });
-  }
+	for (const [selector, attr] of URL_ATTRS) {
+		$(selector).each((_, el) => {
+			const v = $(el).attr(attr);
+			if (v != null) $(el).attr(attr, rw(v));
+		});
+	}
 
-  $("img[srcset], source[srcset]").each((_, el) => {
-    const v = $(el).attr("srcset");
-    if (v != null) $(el).attr("srcset", rewriteSrcset(v, targetOrigin, proxyHost));
-  });
+	$('img[srcset], source[srcset]').each((_, el) => {
+		const v = $(el).attr('srcset');
+		if (v != null)
+			$(el).attr('srcset', rewriteSrcset(v, targetOrigin, proxyHost));
+	});
 
-  $("use, image").each((_, el) => {
-    for (const a of ["href", "xlink:href"]) {
-      const v = $(el).attr(a);
-      if (v != null) $(el).attr(a, rw(v));
-    }
-  });
+	$('use, image').each((_, el) => {
+		for (const a of ['href', 'xlink:href']) {
+			const v = $(el).attr(a);
+			if (v != null) $(el).attr(a, rw(v));
+		}
+	});
 
-  $("base[href]").each((_, el) => {
-    const v = $(el).attr("href");
-    if (v != null) $(el).attr("href", rw(v));
-  });
+	$('base[href]').each((_, el) => {
+		const v = $(el).attr('href');
+		if (v != null) $(el).attr('href', rw(v));
+	});
 
-  // <meta http-equiv="refresh" content="3; url=...">
-  $("meta[http-equiv]").each((_, el) => {
-    if (($(el).attr("http-equiv") ?? "").toLowerCase() !== "refresh") return;
-    const content = $(el).attr("content");
-    if (!content) return;
-    const m = content.match(/^(\s*[\d.]+\s*;\s*url=)(.+)$/i);
-    if (m) $(el).attr("content", m[1] + rw(m[2]!.trim()));
-  });
+	// <meta http-equiv="refresh" content="3; url=...">
+	$('meta[http-equiv]').each((_, el) => {
+		if (($(el).attr('http-equiv') ?? '').toLowerCase() !== 'refresh')
+			return;
+		const content = $(el).attr('content');
+		if (!content) return;
+		const m = content.match(/^(\s*[\d.]+\s*;\s*url=)(.+)$/i);
+		if (m) $(el).attr('content', m[1] + rw(m[2]!.trim()));
+	});
 
-  // Inline style="" attributes.
-  $("[style]").each((_, el) => {
-    const v = $(el).attr("style");
-    if (v != null) $(el).attr("style", rewriteCss(v, targetOrigin, proxyHost));
-  });
+	// Inline style="" attributes.
+	$('[style]').each((_, el) => {
+		const v = $(el).attr('style');
+		if (v != null)
+			$(el).attr('style', rewriteCss(v, targetOrigin, proxyHost));
+	});
 
-  // <style> element bodies.
-  $("style").each((_, el) => {
-    const css = $(el).html();
-    if (css != null) $(el).html(rewriteCss(css, targetOrigin, proxyHost));
-  });
+	// <style> element bodies.
+	$('style').each((_, el) => {
+		const css = $(el).html();
+		if (css != null) $(el).html(rewriteCss(css, targetOrigin, proxyHost));
+	});
 
-  // Sub-resource integrity breaks once we rewrite/proxy.
-  $("[integrity]").removeAttr("integrity");
+	// Sub-resource integrity breaks once we rewrite/proxy.
+	$('[integrity]').removeAttr('integrity');
 
-  // Strip CSP / X-Frame-Options <meta> tags (header equivalents stripped separately).
-  $("meta[http-equiv]").each((_, el) => {
-    const eq = ($(el).attr("http-equiv") ?? "").toLowerCase();
-    if (eq === "content-security-policy" || eq === "x-frame-options") $(el).remove();
-  });
+	// Strip CSP / X-Frame-Options <meta> tags (header equivalents stripped separately).
+	$('meta[http-equiv]').each((_, el) => {
+		const eq = ($(el).attr('http-equiv') ?? '').toLowerCase();
+		if (eq === 'content-security-policy' || eq === 'x-frame-options')
+			$(el).remove();
+	});
 
-  // Ensure head/body exist, then inject.
-  if ($("head").length === 0) $("html").prepend("<head></head>");
-  $("head").prepend(`<script>${frameBustScript}</script>`);
-  if ($("body").length === 0) $("html").append("<body></body>");
-  $("body").append(`<script>${runtimeScript}</script>`);
+	// Ensure head/body exist, then inject.
+	if ($('head').length === 0) $('html').prepend('<head></head>');
+	$('head').prepend(`<script>${frameBustScript}</script>`);
+	if ($('body').length === 0) $('html').append('<body></body>');
+	$('body').append(`<script>${runtimeScript}</script>`);
 
-  return $.html();
+	return $.html();
 }
 ```
 
@@ -1707,6 +1854,7 @@ git commit -m "feat: add cheerio HTML rewriting and runtime injection"
 Strip framing headers, rewrite `Set-Cookie` domains, rewrite `Location` for redirects, and build the outgoing upstream request headers (§7).
 
 **Files:**
+
 - Create: `review-proxy/src/headers.ts`
 - Test: `review-proxy/tests/headers.test.ts`
 
@@ -1714,58 +1862,76 @@ Strip framing headers, rewrite `Set-Cookie` domains, rewrite `Location` for redi
 
 ```ts
 // review-proxy/tests/headers.test.ts
-import { describe, expect, it } from "vitest";
-import { sanitizeResponseHeaders, rewriteSetCookie, rewriteLocation, buildUpstreamHeaders } from "../src/headers";
+import {describe, expect, it} from 'vitest';
+import {
+	sanitizeResponseHeaders,
+	rewriteSetCookie,
+	rewriteLocation,
+	buildUpstreamHeaders,
+} from '../src/headers';
 
-describe("sanitizeResponseHeaders", () => {
-  it("drops framing/security headers and content-length", () => {
-    const out = sanitizeResponseHeaders({
-      "content-type": "text/html",
-      "x-frame-options": "DENY",
-      "content-security-policy": "default-src 'none'",
-      "strict-transport-security": "max-age=1",
-      "content-length": "123",
-      "cache-control": "no-store",
-    });
-    expect(out["content-type"]).toBe("text/html");
-    expect(out["cache-control"]).toBe("no-store");
-    expect(out["x-frame-options"]).toBeUndefined();
-    expect(out["content-security-policy"]).toBeUndefined();
-    expect(out["strict-transport-security"]).toBeUndefined();
-    expect(out["content-length"]).toBeUndefined();
-  });
+describe('sanitizeResponseHeaders', () => {
+	it('drops framing/security headers and content-length', () => {
+		const out = sanitizeResponseHeaders({
+			'content-type': 'text/html',
+			'x-frame-options': 'DENY',
+			'content-security-policy': "default-src 'none'",
+			'strict-transport-security': 'max-age=1',
+			'content-length': '123',
+			'cache-control': 'no-store',
+		});
+		expect(out['content-type']).toBe('text/html');
+		expect(out['cache-control']).toBe('no-store');
+		expect(out['x-frame-options']).toBeUndefined();
+		expect(out['content-security-policy']).toBeUndefined();
+		expect(out['strict-transport-security']).toBeUndefined();
+		expect(out['content-length']).toBeUndefined();
+	});
 });
 
-describe("rewriteSetCookie", () => {
-  it("rewrites Domain to the proxy host and forces Secure", () => {
-    const out = rewriteSetCookie("sid=abc; Domain=dorik.com; Path=/; HttpOnly", "d-ab12cd34.reviewproxy.app");
-    expect(out).toContain("Domain=d-ab12cd34.reviewproxy.app");
-    expect(out).toMatch(/Secure/);
-  });
+describe('rewriteSetCookie', () => {
+	it('rewrites Domain to the proxy host and forces Secure', () => {
+		const out = rewriteSetCookie(
+			'sid=abc; Domain=dorik.com; Path=/; HttpOnly',
+			'd-ab12cd34.reviewproxy.app',
+		);
+		expect(out).toContain('Domain=d-ab12cd34.reviewproxy.app');
+		expect(out).toMatch(/Secure/);
+	});
 });
 
-describe("rewriteLocation", () => {
-  it("rewrites a same-origin redirect to the proxy host", () => {
-    expect(rewriteLocation("https://dorik.com/next", "https://dorik.com", "d-ab12cd34.reviewproxy.app"))
-      .toBe("https://d-ab12cd34.reviewproxy.app/next");
-  });
-  it("leaves a cross-origin redirect unchanged", () => {
-    expect(rewriteLocation("https://other.com/x", "https://dorik.com", "d-ab12cd34.reviewproxy.app"))
-      .toBe("https://other.com/x");
-  });
+describe('rewriteLocation', () => {
+	it('rewrites a same-origin redirect to the proxy host', () => {
+		expect(
+			rewriteLocation(
+				'https://dorik.com/next',
+				'https://dorik.com',
+				'd-ab12cd34.reviewproxy.app',
+			),
+		).toBe('https://d-ab12cd34.reviewproxy.app/next');
+	});
+	it('leaves a cross-origin redirect unchanged', () => {
+		expect(
+			rewriteLocation(
+				'https://other.com/x',
+				'https://dorik.com',
+				'd-ab12cd34.reviewproxy.app',
+			),
+		).toBe('https://other.com/x');
+	});
 });
 
-describe("buildUpstreamHeaders", () => {
-  it("sends a browser UA and never forwards proxy/app headers", () => {
-    const h = buildUpstreamHeaders(undefined);
-    expect(h["user-agent"]).toMatch(/Mozilla/);
-    expect(h.accept).toMatch(/text\/html/);
-    expect(h.cookie).toBeUndefined();
-  });
-  it("forwards stored upstream cookies when provided", () => {
-    const h = buildUpstreamHeaders("sid=abc");
-    expect(h.cookie).toBe("sid=abc");
-  });
+describe('buildUpstreamHeaders', () => {
+	it('sends a browser UA and never forwards proxy/app headers', () => {
+		const h = buildUpstreamHeaders(undefined);
+		expect(h['user-agent']).toMatch(/Mozilla/);
+		expect(h.accept).toMatch(/text\/html/);
+		expect(h.cookie).toBeUndefined();
+	});
+	it('forwards stored upstream cookies when provided', () => {
+		const h = buildUpstreamHeaders('sid=abc');
+		expect(h.cookie).toBe('sid=abc');
+	});
 });
 ```
 
@@ -1778,66 +1944,72 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/headers.ts
-import { rewriteUrl } from "./rewrite-url";
+import {rewriteUrl} from './rewrite-url';
 
 const STRIP = new Set([
-  "x-frame-options",
-  "content-security-policy",
-  "content-security-policy-report-only",
-  "cross-origin-opener-policy",
-  "cross-origin-embedder-policy",
-  "cross-origin-resource-policy",
-  "strict-transport-security",
-  "permissions-policy",
-  "content-length",
-  "content-encoding", // body is decompressed before this point (see upstream.ts)
-  "set-cookie",       // handled separately, per-cookie
-  "location",         // handled separately
+	'x-frame-options',
+	'content-security-policy',
+	'content-security-policy-report-only',
+	'cross-origin-opener-policy',
+	'cross-origin-embedder-policy',
+	'cross-origin-resource-policy',
+	'strict-transport-security',
+	'permissions-policy',
+	'content-length',
+	'content-encoding', // body is decompressed before this point (see upstream.ts)
+	'set-cookie', // handled separately, per-cookie
+	'location', // handled separately
 ]);
 
 /** Copy upstream response headers minus framing/security/length headers. */
 export function sanitizeResponseHeaders(
-  headers: Record<string, string | string[] | undefined>,
+	headers: Record<string, string | string[] | undefined>,
 ): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    const k = key.toLowerCase();
-    if (STRIP.has(k) || value == null) continue;
-    out[k] = Array.isArray(value) ? value.join(", ") : value;
-  }
-  return out;
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) {
+		const k = key.toLowerCase();
+		if (STRIP.has(k) || value == null) continue;
+		out[k] = Array.isArray(value) ? value.join(', ') : value;
+	}
+	return out;
 }
 
 /** Rewrite a Set-Cookie line: Domain → proxy host, force Secure. */
 export function rewriteSetCookie(cookie: string, proxyHost: string): string {
-  let out = cookie.replace(/;\s*Domain=[^;]*/i, `; Domain=${proxyHost}`);
-  if (!/;\s*Domain=/i.test(out)) out += `; Domain=${proxyHost}`;
-  if (!/;\s*Secure/i.test(out)) out += "; Secure";
-  return out;
+	let out = cookie.replace(/;\s*Domain=[^;]*/i, `; Domain=${proxyHost}`);
+	if (!/;\s*Domain=/i.test(out)) out += `; Domain=${proxyHost}`;
+	if (!/;\s*Secure/i.test(out)) out += '; Secure';
+	return out;
 }
 
 /** Rewrite a redirect Location: same-origin → proxy host; cross-origin unchanged. */
-export function rewriteLocation(location: string, targetOrigin: string, proxyHost: string): string {
-  if (/^https?:\/\//i.test(location) || location.startsWith("//")) {
-    return rewriteUrl(location, targetOrigin, proxyHost);
-  }
-  return location; // relative — resolves to the proxy origin already
+export function rewriteLocation(
+	location: string,
+	targetOrigin: string,
+	proxyHost: string,
+): string {
+	if (/^https?:\/\//i.test(location) || location.startsWith('//')) {
+		return rewriteUrl(location, targetOrigin, proxyHost);
+	}
+	return location; // relative — resolves to the proxy origin already
 }
 
 const BROWSER_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+	'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+	'(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
 /** Headers sent to the upstream site. Never includes review-platform headers. */
-export function buildUpstreamHeaders(upstreamCookie: string | undefined): Record<string, string> {
-  const h: Record<string, string> = {
-    "user-agent": BROWSER_UA,
-    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "accept-language": "en-US,en;q=0.9",
-    "accept-encoding": "gzip, deflate, br",
-  };
-  if (upstreamCookie) h.cookie = upstreamCookie;
-  return h;
+export function buildUpstreamHeaders(
+	upstreamCookie: string | undefined,
+): Record<string, string> {
+	const h: Record<string, string> = {
+		'user-agent': BROWSER_UA,
+		accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+		'accept-language': 'en-US,en;q=0.9',
+		'accept-encoding': 'gzip, deflate, br',
+	};
+	if (upstreamCookie) h.cookie = upstreamCookie;
+	return h;
 }
 ```
 
@@ -1860,6 +2032,7 @@ git commit -m "feat: add request/response header rewriting"
 Each error response is a self-contained HTML page that also posts `pinion:ready` so the parent does not hang (§11).
 
 **Files:**
+
 - Create: `review-proxy/src/error-pages.ts`
 - Test: `review-proxy/tests/error-pages.test.ts`
 
@@ -1867,25 +2040,25 @@ Each error response is a self-contained HTML page that also posts `pinion:ready`
 
 ```ts
 // review-proxy/tests/error-pages.test.ts
-import { describe, expect, it } from "vitest";
-import { errorPage } from "../src/error-pages";
+import {describe, expect, it} from 'vitest';
+import {errorPage} from '../src/error-pages';
 
-describe("errorPage", () => {
-  it("returns status, html body, and posts pinion:ready", () => {
-    const r = errorPage("UNKNOWN_SUBDOMAIN", "http://localhost:3000");
-    expect(r.status).toBe(404);
-    expect(r.body).toContain("not available");
-    expect(r.body).toContain("pinion:ready");
-    expect(r.body).toContain("http://localhost:3000");
-  });
+describe('errorPage', () => {
+	it('returns status, html body, and posts pinion:ready', () => {
+		const r = errorPage('UNKNOWN_SUBDOMAIN', 'http://localhost:3000');
+		expect(r.status).toBe(404);
+		expect(r.body).toContain('not available');
+		expect(r.body).toContain('pinion:ready');
+		expect(r.body).toContain('http://localhost:3000');
+	});
 
-  it("maps each known kind to the documented status", () => {
-    expect(errorPage("BAD_TOKEN", "o").status).toBe(401);
-    expect(errorPage("UPSTREAM_UNREACHABLE", "o").status).toBe(502);
-    expect(errorPage("UPSTREAM_TIMEOUT", "o").status).toBe(504);
-    expect(errorPage("TOO_LARGE", "o").status).toBe(502);
-    expect(errorPage("REDIRECT_LOOP", "o").status).toBe(508);
-  });
+	it('maps each known kind to the documented status', () => {
+		expect(errorPage('BAD_TOKEN', 'o').status).toBe(401);
+		expect(errorPage('UPSTREAM_UNREACHABLE', 'o').status).toBe(502);
+		expect(errorPage('UPSTREAM_TIMEOUT', 'o').status).toBe(504);
+		expect(errorPage('TOO_LARGE', 'o').status).toBe(502);
+		expect(errorPage('REDIRECT_LOOP', 'o').status).toBe(508);
+	});
 });
 ```
 
@@ -1899,30 +2072,63 @@ Expected: FAIL — module not found.
 ```ts
 // review-proxy/src/error-pages.ts
 export type ErrorKind =
-  | "UNKNOWN_SUBDOMAIN"
-  | "BAD_TOKEN"
-  | "UPSTREAM_UNREACHABLE"
-  | "UPSTREAM_TIMEOUT"
-  | "TOO_LARGE"
-  | "REDIRECT_LOOP";
+	| 'UNKNOWN_SUBDOMAIN'
+	| 'BAD_TOKEN'
+	| 'UPSTREAM_UNREACHABLE'
+	| 'UPSTREAM_TIMEOUT'
+	| 'TOO_LARGE'
+	| 'REDIRECT_LOOP';
 
-const SPEC: Record<ErrorKind, { status: number; title: string; message: string }> = {
-  UNKNOWN_SUBDOMAIN: { status: 404, title: "Link unavailable", message: "This review link is not available." },
-  BAD_TOKEN: { status: 401, title: "Link expired", message: "This review link has expired." },
-  UPSTREAM_UNREACHABLE: { status: 502, title: "Site unreachable", message: "Couldn't reach the site." },
-  UPSTREAM_TIMEOUT: { status: 504, title: "Site too slow", message: "The site took too long to respond." },
-  TOO_LARGE: { status: 502, title: "Page too large", message: "This page is too large to preview." },
-  REDIRECT_LOOP: { status: 508, title: "Redirect loop", message: "This page redirects in a loop." },
+const SPEC: Record<
+	ErrorKind,
+	{status: number; title: string; message: string}
+> = {
+	UNKNOWN_SUBDOMAIN: {
+		status: 404,
+		title: 'Link unavailable',
+		message: 'This review link is not available.',
+	},
+	BAD_TOKEN: {
+		status: 401,
+		title: 'Link expired',
+		message: 'This review link has expired.',
+	},
+	UPSTREAM_UNREACHABLE: {
+		status: 502,
+		title: 'Site unreachable',
+		message: "Couldn't reach the site.",
+	},
+	UPSTREAM_TIMEOUT: {
+		status: 504,
+		title: 'Site too slow',
+		message: 'The site took too long to respond.',
+	},
+	TOO_LARGE: {
+		status: 502,
+		title: 'Page too large',
+		message: 'This page is too large to preview.',
+	},
+	REDIRECT_LOOP: {
+		status: 508,
+		title: 'Redirect loop',
+		message: 'This page redirects in a loop.',
+	},
 };
 
 function escapeHtml(s: string): string {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+	return s.replace(
+		/[&<>"]/g,
+		(c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]!,
+	);
 }
 
 /** Build a self-contained error page that still notifies the parent app. */
-export function errorPage(kind: ErrorKind, appOrigin: string): { status: number; body: string } {
-  const { status, title, message } = SPEC[kind];
-  const body = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+export function errorPage(
+	kind: ErrorKind,
+	appOrigin: string,
+): {status: number; body: string} {
+	const {status, title, message} = SPEC[kind];
+	const body = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>html,body{height:100%;margin:0}body{display:flex;align-items:center;justify-content:center;
 font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;color:#333}
 .box{text-align:center;padding:2rem}h1{font-size:1.1rem;margin:0 0 .4rem}p{margin:0;color:#777}</style></head>
@@ -1930,7 +2136,7 @@ font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;color:#3
 <script>(function(){try{if(window.parent&&window.parent!==window){
 window.parent.postMessage({type:"pinion:ready",width:0,height:0,pageUrl:location.pathname},${JSON.stringify(appOrigin)});
 }}catch(e){}})();</script></body></html>`;
-  return { status, body };
+	return {status, body};
 }
 ```
 
@@ -1953,6 +2159,7 @@ git commit -m "feat: add branded error pages"
 Fetch the upstream site with `undici`: browser headers, manual redirects, timeout, and a body-size cap for buffered content. Decompresses gzip/deflate/br for buffered (HTML/CSS) bodies.
 
 **Files:**
+
 - Create: `review-proxy/src/upstream.ts`
 - Test: `review-proxy/tests/upstream.test.ts`
 
@@ -1960,52 +2167,67 @@ Fetch the upstream site with `undici`: browser headers, manual redirects, timeou
 
 ```ts
 // review-proxy/tests/upstream.test.ts
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import http from "node:http";
-import { gzipSync } from "node:zlib";
-import { fetchUpstream } from "../src/upstream";
+import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import http from 'node:http';
+import {gzipSync} from 'node:zlib';
+import {fetchUpstream} from '../src/upstream';
 
 let server: http.Server;
 let base: string;
 
 beforeAll(async () => {
-  server = http.createServer((req, res) => {
-    if (req.url === "/html") {
-      res.writeHead(200, { "content-type": "text/html" });
-      res.end("<html><body>hi</body></html>");
-    } else if (req.url === "/gz") {
-      res.writeHead(200, { "content-type": "text/html", "content-encoding": "gzip" });
-      res.end(gzipSync(Buffer.from("<html><body>gz</body></html>")));
-    } else if (req.url === "/redir") {
-      res.writeHead(302, { location: "/html" });
-      res.end();
-    } else {
-      res.writeHead(404);
-      res.end("no");
-    }
-  });
-  await new Promise<void>((r) => server.listen(0, r));
-  base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+	server = http.createServer((req, res) => {
+		if (req.url === '/html') {
+			res.writeHead(200, {'content-type': 'text/html'});
+			res.end('<html><body>hi</body></html>');
+		} else if (req.url === '/gz') {
+			res.writeHead(200, {
+				'content-type': 'text/html',
+				'content-encoding': 'gzip',
+			});
+			res.end(gzipSync(Buffer.from('<html><body>gz</body></html>')));
+		} else if (req.url === '/redir') {
+			res.writeHead(302, {location: '/html'});
+			res.end();
+		} else {
+			res.writeHead(404);
+			res.end('no');
+		}
+	});
+	await new Promise<void>((r) => server.listen(0, r));
+	base = `http://127.0.0.1:${(server.address() as {port: number}).port}`;
 });
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-describe("fetchUpstream", () => {
-  it("buffers and returns HTML as decoded text", async () => {
-    const r = await fetchUpstream(`${base}/html`, { method: "GET", timeoutMs: 5000, maxBytes: 1_000_000 });
-    expect(r.statusCode).toBe(200);
-    expect(r.bodyText).toContain("hi");
-  });
+describe('fetchUpstream', () => {
+	it('buffers and returns HTML as decoded text', async () => {
+		const r = await fetchUpstream(`${base}/html`, {
+			method: 'GET',
+			timeoutMs: 5000,
+			maxBytes: 1_000_000,
+		});
+		expect(r.statusCode).toBe(200);
+		expect(r.bodyText).toContain('hi');
+	});
 
-  it("decompresses a gzipped HTML body", async () => {
-    const r = await fetchUpstream(`${base}/gz`, { method: "GET", timeoutMs: 5000, maxBytes: 1_000_000 });
-    expect(r.bodyText).toContain("gz");
-  });
+	it('decompresses a gzipped HTML body', async () => {
+		const r = await fetchUpstream(`${base}/gz`, {
+			method: 'GET',
+			timeoutMs: 5000,
+			maxBytes: 1_000_000,
+		});
+		expect(r.bodyText).toContain('gz');
+	});
 
-  it("returns a 3xx without following it", async () => {
-    const r = await fetchUpstream(`${base}/redir`, { method: "GET", timeoutMs: 5000, maxBytes: 1_000_000 });
-    expect(r.statusCode).toBe(302);
-    expect(r.headers["location"]).toBe("/html");
-  });
+	it('returns a 3xx without following it', async () => {
+		const r = await fetchUpstream(`${base}/redir`, {
+			method: 'GET',
+			timeoutMs: 5000,
+			maxBytes: 1_000_000,
+		});
+		expect(r.statusCode).toBe(302);
+		expect(r.headers['location']).toBe('/html');
+	});
 });
 ```
 
@@ -2018,78 +2240,88 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/upstream.ts
-import { request } from "undici";
-import { Readable } from "node:stream";
-import { gunzipSync, inflateSync, brotliDecompressSync } from "node:zlib";
-import { buildUpstreamHeaders } from "./headers";
+import {request} from 'undici';
+import {Readable} from 'node:stream';
+import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
+import {buildUpstreamHeaders} from './headers';
 
 export type UpstreamOptions = {
-  method: string;
-  timeoutMs: number;
-  maxBytes: number;
-  upstreamCookie?: string;
+	method: string;
+	timeoutMs: number;
+	maxBytes: number;
+	upstreamCookie?: string;
 };
 
 export type UpstreamResponse = {
-  statusCode: number;
-  headers: Record<string, string | string[] | undefined>;
-  /** Decoded body when the content type was buffered (HTML/CSS); else undefined. */
-  bodyText?: string;
-  /** Raw passthrough stream when the body was not buffered. */
-  bodyStream?: Readable;
-  contentType: string;
+	statusCode: number;
+	headers: Record<string, string | string[] | undefined>;
+	/** Decoded body when the content type was buffered (HTML/CSS); else undefined. */
+	bodyText?: string;
+	/** Raw passthrough stream when the body was not buffered. */
+	bodyStream?: Readable;
+	contentType: string;
 };
 
 const BUFFERED = /text\/html|application\/xhtml\+xml|text\/css/i;
 
 function decode(buf: Buffer, encoding: string | undefined): Buffer {
-  switch ((encoding ?? "").toLowerCase()) {
-    case "gzip": return gunzipSync(buf);
-    case "deflate": return inflateSync(buf);
-    case "br": return brotliDecompressSync(buf);
-    default: return buf;
-  }
+	switch ((encoding ?? '').toLowerCase()) {
+		case 'gzip':
+			return gunzipSync(buf);
+		case 'deflate':
+			return inflateSync(buf);
+		case 'br':
+			return brotliDecompressSync(buf);
+		default:
+			return buf;
+	}
 }
 
-export async function fetchUpstream(url: string, opts: UpstreamOptions): Promise<UpstreamResponse> {
-  const res = await request(url, {
-    method: opts.method as "GET" | "HEAD",
-    headers: buildUpstreamHeaders(opts.upstreamCookie),
-    maxRedirections: 0, // manual — the handler rewrites Location
-    headersTimeout: opts.timeoutMs,
-    bodyTimeout: opts.timeoutMs,
-  });
+export async function fetchUpstream(
+	url: string,
+	opts: UpstreamOptions,
+): Promise<UpstreamResponse> {
+	const res = await request(url, {
+		method: opts.method as 'GET' | 'HEAD',
+		headers: buildUpstreamHeaders(opts.upstreamCookie),
+		maxRedirections: 0, // manual — the handler rewrites Location
+		headersTimeout: opts.timeoutMs,
+		bodyTimeout: opts.timeoutMs,
+	});
 
-  const contentType = String(res.headers["content-type"] ?? "");
+	const contentType = String(res.headers['content-type'] ?? '');
 
-  if (!BUFFERED.test(contentType) || opts.method === "HEAD") {
-    return {
-      statusCode: res.statusCode,
-      headers: res.headers,
-      bodyStream: Readable.from(res.body),
-      contentType,
-    };
-  }
+	if (!BUFFERED.test(contentType) || opts.method === 'HEAD') {
+		return {
+			statusCode: res.statusCode,
+			headers: res.headers,
+			bodyStream: Readable.from(res.body),
+			contentType,
+		};
+	}
 
-  // Buffer HTML/CSS with a hard size cap, then decompress.
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of res.body) {
-    const buf = chunk as Buffer;
-    total += buf.length;
-    if (total > opts.maxBytes) {
-      throw new Error("UPSTREAM_TOO_LARGE");
-    }
-    chunks.push(buf);
-  }
-  const raw = Buffer.concat(chunks);
-  const decoded = decode(raw, res.headers["content-encoding"] as string | undefined);
-  return {
-    statusCode: res.statusCode,
-    headers: res.headers,
-    bodyText: decoded.toString("utf8"),
-    contentType,
-  };
+	// Buffer HTML/CSS with a hard size cap, then decompress.
+	const chunks: Buffer[] = [];
+	let total = 0;
+	for await (const chunk of res.body) {
+		const buf = chunk as Buffer;
+		total += buf.length;
+		if (total > opts.maxBytes) {
+			throw new Error('UPSTREAM_TOO_LARGE');
+		}
+		chunks.push(buf);
+	}
+	const raw = Buffer.concat(chunks);
+	const decoded = decode(
+		raw,
+		res.headers['content-encoding'] as string | undefined,
+	);
+	return {
+		statusCode: res.statusCode,
+		headers: res.headers,
+		bodyText: decoded.toString('utf8'),
+		contentType,
+	};
 }
 ```
 
@@ -2112,6 +2344,7 @@ git commit -m "feat: add undici upstream fetch with size cap and decoding"
 Orchestrates the §5 request lifecycle. Pure of Fastify — takes a normalized request + injected dependencies — so it is fully unit-testable.
 
 **Files:**
+
 - Create: `review-proxy/src/proxy-handler.ts`
 - Test: `review-proxy/tests/proxy-handler.test.ts`
 
@@ -2119,99 +2352,149 @@ Orchestrates the §5 request lifecycle. Pure of Fastify — takes a normalized r
 
 ```ts
 // review-proxy/tests/proxy-handler.test.ts
-import { describe, expect, it } from "vitest";
-import { Readable } from "node:stream";
-import { handleProxyRequest, type ProxyDeps } from "../src/proxy-handler";
-import { signProxyToken } from "../src/token";
+import {describe, expect, it} from 'vitest';
+import {Readable} from 'node:stream';
+import {handleProxyRequest, type ProxyDeps} from '../src/proxy-handler';
+import {signProxyToken} from '../src/token';
 
 const config = {
-  port: 8080,
-  proxyDomain: "reviewproxy.app",
-  appOrigin: "http://localhost:3000",
-  databaseUrl: "x",
-  proxyTokenSecret: "secret",
-  upstreamTimeoutMs: 5000,
-  maxHtmlBytes: 1_000_000,
+	port: 8080,
+	proxyDomain: 'reviewproxy.app',
+	appOrigin: 'http://localhost:3000',
+	databaseUrl: 'x',
+	proxyTokenSecret: 'secret',
+	upstreamTimeoutMs: 5000,
+	maxHtmlBytes: 1_000_000,
 };
 
 function deps(over: Partial<ProxyDeps> = {}): ProxyDeps {
-  return {
-    config,
-    lookupSite: async () => ({ targetOrigin: "https://dorik.com", documentId: "doc1", enabled: true }),
-    assertUpstreamAllowed: async () => {},
-    fetchUpstream: async () => ({
-      statusCode: 200,
-      headers: { "content-type": "text/html" },
-      bodyText: "<html><head></head><body><a href='https://dorik.com/x'>x</a></body></html>",
-      contentType: "text/html",
-    }),
-    ...over,
-  };
+	return {
+		config,
+		lookupSite: async () => ({
+			targetOrigin: 'https://dorik.com',
+			documentId: 'doc1',
+			enabled: true,
+		}),
+		assertUpstreamAllowed: async () => {},
+		fetchUpstream: async () => ({
+			statusCode: 200,
+			headers: {'content-type': 'text/html'},
+			bodyText:
+				"<html><head></head><body><a href='https://dorik.com/x'>x</a></body></html>",
+			contentType: 'text/html',
+		}),
+		...over,
+	};
 }
 
-const goodToken = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "u" }, "secret");
+const goodToken = signProxyToken(
+	{documentId: 'doc1', subdomain: 'd-aaaa1111', sub: 'u'},
+	'secret',
+);
 
-describe("handleProxyRequest", () => {
-  it("404s an unknown subdomain", async () => {
-    const r = await handleProxyRequest(
-      { method: "GET", host: "nope.reviewproxy.app", path: "/", query: "", cookies: {} },
-      deps({ lookupSite: async () => null }),
-    );
-    expect(r.status).toBe(404);
-  });
+describe('handleProxyRequest', () => {
+	it('404s an unknown subdomain', async () => {
+		const r = await handleProxyRequest(
+			{
+				method: 'GET',
+				host: 'nope.reviewproxy.app',
+				path: '/',
+				query: '',
+				cookies: {},
+			},
+			deps({lookupSite: async () => null}),
+		);
+		expect(r.status).toBe(404);
+	});
 
-  it("401s when the token is missing", async () => {
-    const r = await handleProxyRequest(
-      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/", query: "", cookies: {} },
-      deps(),
-    );
-    expect(r.status).toBe(401);
-  });
+	it('401s when the token is missing', async () => {
+		const r = await handleProxyRequest(
+			{
+				method: 'GET',
+				host: 'd-aaaa1111.reviewproxy.app',
+				path: '/',
+				query: '',
+				cookies: {},
+			},
+			deps(),
+		);
+		expect(r.status).toBe(401);
+	});
 
-  it("302s to a clean URL and sets the cookie when token arrives via query", async () => {
-    const r = await handleProxyRequest(
-      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/about", query: `__rt=${goodToken}`, cookies: {} },
-      deps(),
-    );
-    expect(r.status).toBe(302);
-    expect(r.headers["location"]).toBe("/about");
-    expect(String(r.headers["set-cookie"])).toContain("__rt=");
-  });
+	it('302s to a clean URL and sets the cookie when token arrives via query', async () => {
+		const r = await handleProxyRequest(
+			{
+				method: 'GET',
+				host: 'd-aaaa1111.reviewproxy.app',
+				path: '/about',
+				query: `__rt=${goodToken}`,
+				cookies: {},
+			},
+			deps(),
+		);
+		expect(r.status).toBe(302);
+		expect(r.headers['location']).toBe('/about');
+		expect(String(r.headers['set-cookie'])).toContain('__rt=');
+	});
 
-  it("proxies HTML, strips framing headers, rewrites same-origin links, injects the runtime", async () => {
-    const r = await handleProxyRequest(
-      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/", query: "", cookies: { __rt: goodToken } },
-      deps(),
-    );
-    expect(r.status).toBe(200);
-    const body = String(r.body);
-    expect(body).toContain("d-aaaa1111.reviewproxy.app/x");
-    expect(body).toContain("pinion:ready");
-  });
+	it('proxies HTML, strips framing headers, rewrites same-origin links, injects the runtime', async () => {
+		const r = await handleProxyRequest(
+			{
+				method: 'GET',
+				host: 'd-aaaa1111.reviewproxy.app',
+				path: '/',
+				query: '',
+				cookies: {__rt: goodToken},
+			},
+			deps(),
+		);
+		expect(r.status).toBe(200);
+		const body = String(r.body);
+		expect(body).toContain('d-aaaa1111.reviewproxy.app/x');
+		expect(body).toContain('pinion:ready');
+	});
 
-  it("rewrites a same-origin redirect Location", async () => {
-    const r = await handleProxyRequest(
-      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/", query: "", cookies: { __rt: goodToken } },
-      deps({
-        fetchUpstream: async () => ({
-          statusCode: 302,
-          headers: { location: "https://dorik.com/next" },
-          bodyStream: Readable.from([]),
-          contentType: "",
-        }),
-      }),
-    );
-    expect(r.status).toBe(302);
-    expect(r.headers["location"]).toBe("https://d-aaaa1111.reviewproxy.app/next");
-  });
+	it('rewrites a same-origin redirect Location', async () => {
+		const r = await handleProxyRequest(
+			{
+				method: 'GET',
+				host: 'd-aaaa1111.reviewproxy.app',
+				path: '/',
+				query: '',
+				cookies: {__rt: goodToken},
+			},
+			deps({
+				fetchUpstream: async () => ({
+					statusCode: 302,
+					headers: {location: 'https://dorik.com/next'},
+					bodyStream: Readable.from([]),
+					contentType: '',
+				}),
+			}),
+		);
+		expect(r.status).toBe(302);
+		expect(r.headers['location']).toBe(
+			'https://d-aaaa1111.reviewproxy.app/next',
+		);
+	});
 
-  it("504s on an upstream timeout", async () => {
-    const r = await handleProxyRequest(
-      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/", query: "", cookies: { __rt: goodToken } },
-      deps({ fetchUpstream: async () => { throw new Error("UND_ERR_HEADERS_TIMEOUT"); } }),
-    );
-    expect(r.status).toBe(504);
-  });
+	it('504s on an upstream timeout', async () => {
+		const r = await handleProxyRequest(
+			{
+				method: 'GET',
+				host: 'd-aaaa1111.reviewproxy.app',
+				path: '/',
+				query: '',
+				cookies: {__rt: goodToken},
+			},
+			deps({
+				fetchUpstream: async () => {
+					throw new Error('UND_ERR_HEADERS_TIMEOUT');
+				},
+			}),
+		);
+		expect(r.status).toBe(504);
+	});
 });
 ```
 
@@ -2224,161 +2507,187 @@ Expected: FAIL — module not found.
 
 ```ts
 // review-proxy/src/proxy-handler.ts
-import { Readable } from "node:stream";
-import type { Config } from "./config";
-import type { SiteRecord } from "./registry";
-import type { UpstreamResponse } from "./upstream";
-import { parseSubdomain } from "./subdomain";
-import { verifyProxyToken } from "./token";
-import { rewriteHtml } from "./html-rewrite";
-import { rewriteCss } from "./css-rewrite";
-import { sanitizeResponseHeaders, rewriteSetCookie, rewriteLocation } from "./headers";
-import { buildOverlayRuntime, FRAME_BUST_SCRIPT } from "./overlay-runtime";
-import { errorPage, type ErrorKind } from "./error-pages";
+import {Readable} from 'node:stream';
+import type {Config} from './config';
+import type {SiteRecord} from './registry';
+import type {UpstreamResponse} from './upstream';
+import {parseSubdomain} from './subdomain';
+import {verifyProxyToken} from './token';
+import {rewriteHtml} from './html-rewrite';
+import {rewriteCss} from './css-rewrite';
+import {
+	sanitizeResponseHeaders,
+	rewriteSetCookie,
+	rewriteLocation,
+} from './headers';
+import {buildOverlayRuntime, FRAME_BUST_SCRIPT} from './overlay-runtime';
+import {errorPage, type ErrorKind} from './error-pages';
 
 export type ProxyRequest = {
-  method: string;
-  host: string;
-  path: string;          // pathname only
-  query: string;         // raw query string, no leading "?"
-  cookies: Record<string, string>;
+	method: string;
+	host: string;
+	path: string; // pathname only
+	query: string; // raw query string, no leading "?"
+	cookies: Record<string, string>;
 };
 
 export type ProxyResponse = {
-  status: number;
-  headers: Record<string, string | string[]>;
-  body: string | Buffer | Readable;
+	status: number;
+	headers: Record<string, string | string[]>;
+	body: string | Buffer | Readable;
 };
 
 export type ProxyDeps = {
-  config: Config;
-  lookupSite: (subdomain: string) => Promise<SiteRecord | null>;
-  assertUpstreamAllowed: (url: string) => Promise<void>;
-  fetchUpstream: (
-    url: string,
-    opts: { method: string; timeoutMs: number; maxBytes: number },
-  ) => Promise<UpstreamResponse>;
+	config: Config;
+	lookupSite: (subdomain: string) => Promise<SiteRecord | null>;
+	assertUpstreamAllowed: (url: string) => Promise<void>;
+	fetchUpstream: (
+		url: string,
+		opts: {method: string; timeoutMs: number; maxBytes: number},
+	) => Promise<UpstreamResponse>;
 };
 
 function htmlError(kind: ErrorKind, appOrigin: string): ProxyResponse {
-  const { status, body } = errorPage(kind, appOrigin);
-  return { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }, body };
+	const {status, body} = errorPage(kind, appOrigin);
+	return {
+		status,
+		headers: {
+			'content-type': 'text/html; charset=utf-8',
+			'cache-control': 'no-store',
+		},
+		body,
+	};
 }
 
-export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Promise<ProxyResponse> {
-  const { config } = deps;
-  const appOrigin = config.appOrigin;
+export async function handleProxyRequest(
+	req: ProxyRequest,
+	deps: ProxyDeps,
+): Promise<ProxyResponse> {
+	const {config} = deps;
+	const appOrigin = config.appOrigin;
 
-  // 1. Host → subdomain.
-  const subdomain = parseSubdomain(req.host, config.proxyDomain);
-  if (!subdomain) return htmlError("UNKNOWN_SUBDOMAIN", appOrigin);
+	// 1. Host → subdomain.
+	const subdomain = parseSubdomain(req.host, config.proxyDomain);
+	if (!subdomain) return htmlError('UNKNOWN_SUBDOMAIN', appOrigin);
 
-  // 2. Registry lookup.
-  const site = await deps.lookupSite(subdomain);
-  if (!site || !site.enabled) return htmlError("UNKNOWN_SUBDOMAIN", appOrigin);
+	// 2. Registry lookup.
+	const site = await deps.lookupSite(subdomain);
+	if (!site || !site.enabled)
+		return htmlError('UNKNOWN_SUBDOMAIN', appOrigin);
 
-  // 3. Authenticate.
-  const params = new URLSearchParams(req.query);
-  const queryToken = params.get("__rt");
-  const token = req.cookies["__rt"] ?? queryToken ?? "";
-  const payload = verifyProxyToken(token, config.proxyTokenSecret, subdomain);
-  if (!payload || payload.documentId !== site.documentId) {
-    return htmlError("BAD_TOKEN", appOrigin);
-  }
-  // If the token came via the query string, set the cookie and 302 to a clean URL.
-  if (queryToken && !req.cookies["__rt"]) {
-    params.delete("__rt");
-    const clean = req.path + (params.toString() ? `?${params.toString()}` : "");
-    return {
-      status: 302,
-      headers: {
-        location: clean,
-        "set-cookie": `__rt=${queryToken}; Path=/; Secure; HttpOnly; SameSite=None; Partitioned`,
-        "cache-control": "no-store",
-      },
-      body: "",
-    };
-  }
+	// 3. Authenticate.
+	const params = new URLSearchParams(req.query);
+	const queryToken = params.get('__rt');
+	const token = req.cookies['__rt'] ?? queryToken ?? '';
+	const payload = verifyProxyToken(token, config.proxyTokenSecret, subdomain);
+	if (!payload || payload.documentId !== site.documentId) {
+		return htmlError('BAD_TOKEN', appOrigin);
+	}
+	// If the token came via the query string, set the cookie and 302 to a clean URL.
+	if (queryToken && !req.cookies['__rt']) {
+		params.delete('__rt');
+		const clean =
+			req.path + (params.toString() ? `?${params.toString()}` : '');
+		return {
+			status: 302,
+			headers: {
+				location: clean,
+				'set-cookie': `__rt=${queryToken}; Path=/; Secure; HttpOnly; SameSite=None; Partitioned`,
+				'cache-control': 'no-store',
+			},
+			body: '',
+		};
+	}
 
-  // 4. Build the upstream URL.
-  const cleanQuery = (() => {
-    params.delete("__rt");
-    const s = params.toString();
-    return s ? `?${s}` : "";
-  })();
-  const upstreamUrl = site.targetOrigin + req.path + cleanQuery;
+	// 4. Build the upstream URL.
+	const cleanQuery = (() => {
+		params.delete('__rt');
+		const s = params.toString();
+		return s ? `?${s}` : '';
+	})();
+	const upstreamUrl = site.targetOrigin + req.path + cleanQuery;
 
-  // 5. SSRF re-check (DNS rebinding).
-  try {
-    await deps.assertUpstreamAllowed(upstreamUrl);
-  } catch {
-    return htmlError("UPSTREAM_UNREACHABLE", appOrigin);
-  }
+	// 5. SSRF re-check (DNS rebinding).
+	try {
+		await deps.assertUpstreamAllowed(upstreamUrl);
+	} catch {
+		return htmlError('UPSTREAM_UNREACHABLE', appOrigin);
+	}
 
-  // 6. Fetch upstream.
-  let upstream: UpstreamResponse;
-  try {
-    upstream = await deps.fetchUpstream(upstreamUrl, {
-      method: req.method === "HEAD" ? "HEAD" : "GET",
-      timeoutMs: config.upstreamTimeoutMs,
-      maxBytes: config.maxHtmlBytes,
-    });
-  } catch (e) {
-    const msg = (e as Error).message ?? "";
-    if (/TIMEOUT/i.test(msg)) return htmlError("UPSTREAM_TIMEOUT", appOrigin);
-    if (/TOO_LARGE/i.test(msg)) return htmlError("TOO_LARGE", appOrigin);
-    return htmlError("UPSTREAM_UNREACHABLE", appOrigin);
-  }
+	// 6. Fetch upstream.
+	let upstream: UpstreamResponse;
+	try {
+		upstream = await deps.fetchUpstream(upstreamUrl, {
+			method: req.method === 'HEAD' ? 'HEAD' : 'GET',
+			timeoutMs: config.upstreamTimeoutMs,
+			maxBytes: config.maxHtmlBytes,
+		});
+	} catch (e) {
+		const msg = (e as Error).message ?? '';
+		if (/TIMEOUT/i.test(msg))
+			return htmlError('UPSTREAM_TIMEOUT', appOrigin);
+		if (/TOO_LARGE/i.test(msg)) return htmlError('TOO_LARGE', appOrigin);
+		return htmlError('UPSTREAM_UNREACHABLE', appOrigin);
+	}
 
-  const proxyHost = `${subdomain}.${config.proxyDomain}`;
-  const headers = sanitizeResponseHeaders(upstream.headers);
+	const proxyHost = `${subdomain}.${config.proxyDomain}`;
+	const headers = sanitizeResponseHeaders(upstream.headers);
 
-  // Rewrite Set-Cookie (may be one or many).
-  const rawCookies = upstream.headers["set-cookie"];
-  if (rawCookies != null) {
-    const list = Array.isArray(rawCookies) ? rawCookies : [rawCookies];
-    headers["set-cookie"] = list.map((c) => rewriteSetCookie(c, proxyHost)) as unknown as string;
-  }
+	// Rewrite Set-Cookie (may be one or many).
+	const rawCookies = upstream.headers['set-cookie'];
+	if (rawCookies != null) {
+		const list = Array.isArray(rawCookies) ? rawCookies : [rawCookies];
+		headers['set-cookie'] = list.map((c) =>
+			rewriteSetCookie(c, proxyHost),
+		) as unknown as string;
+	}
 
-  // 7. Branch on the response.
-  // 3xx — rewrite Location.
-  if (upstream.statusCode >= 300 && upstream.statusCode < 400) {
-    const loc = upstream.headers["location"];
-    const out: Record<string, string | string[]> = { ...headers };
-    if (typeof loc === "string") {
-      out["location"] = rewriteLocation(loc, site.targetOrigin, proxyHost);
-    }
-    return { status: upstream.statusCode, headers: out, body: "" };
-  }
+	// 7. Branch on the response.
+	// 3xx — rewrite Location.
+	if (upstream.statusCode >= 300 && upstream.statusCode < 400) {
+		const loc = upstream.headers['location'];
+		const out: Record<string, string | string[]> = {...headers};
+		if (typeof loc === 'string') {
+			out['location'] = rewriteLocation(
+				loc,
+				site.targetOrigin,
+				proxyHost,
+			);
+		}
+		return {status: upstream.statusCode, headers: out, body: ''};
+	}
 
-  // HTML — rewrite + inject.
-  if (/text\/html|application\/xhtml\+xml/i.test(upstream.contentType) && upstream.bodyText != null) {
-    const rewritten = rewriteHtml(upstream.bodyText, {
-      targetOrigin: site.targetOrigin,
-      proxyHost,
-      frameBustScript: FRAME_BUST_SCRIPT,
-      runtimeScript: buildOverlayRuntime(appOrigin),
-    });
-    headers["content-type"] = "text/html; charset=utf-8";
-    return { status: upstream.statusCode, headers, body: rewritten };
-  }
+	// HTML — rewrite + inject.
+	if (
+		/text\/html|application\/xhtml\+xml/i.test(upstream.contentType) &&
+		upstream.bodyText != null
+	) {
+		const rewritten = rewriteHtml(upstream.bodyText, {
+			targetOrigin: site.targetOrigin,
+			proxyHost,
+			frameBustScript: FRAME_BUST_SCRIPT,
+			runtimeScript: buildOverlayRuntime(appOrigin),
+		});
+		headers['content-type'] = 'text/html; charset=utf-8';
+		return {status: upstream.statusCode, headers, body: rewritten};
+	}
 
-  // CSS — rewrite url()/@import.
-  if (/text\/css/i.test(upstream.contentType) && upstream.bodyText != null) {
-    headers["content-type"] = "text/css";
-    return {
-      status: upstream.statusCode,
-      headers,
-      body: rewriteCss(upstream.bodyText, site.targetOrigin, proxyHost),
-    };
-  }
+	// CSS — rewrite url()/@import.
+	if (/text\/css/i.test(upstream.contentType) && upstream.bodyText != null) {
+		headers['content-type'] = 'text/css';
+		return {
+			status: upstream.statusCode,
+			headers,
+			body: rewriteCss(upstream.bodyText, site.targetOrigin, proxyHost),
+		};
+	}
 
-  // Everything else — stream through unmodified.
-  return {
-    status: upstream.statusCode,
-    headers,
-    body: upstream.bodyStream ?? Readable.from([]),
-  };
+	// Everything else — stream through unmodified.
+	return {
+		status: upstream.statusCode,
+		headers,
+		body: upstream.bodyStream ?? Readable.from([]),
+	};
 }
 ```
 
@@ -2401,6 +2710,7 @@ git commit -m "feat: add proxy request handler"
 Wire a single catch-all route to the handler, connect Mongo, and add a full-pipeline integration test that proxies a local upstream.
 
 **Files:**
+
 - Create: `review-proxy/src/server.ts`, `review-proxy/src/index.ts`
 - Test: `review-proxy/tests/integration.test.ts`
 - Modify: `review-proxy/README.md` (Status section)
@@ -2409,84 +2719,99 @@ Wire a single catch-all route to the handler, connect Mongo, and add a full-pipe
 
 ```ts
 // review-proxy/tests/integration.test.ts
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import http from "node:http";
-import { buildServer } from "../src/server";
-import { signProxyToken } from "../src/token";
-import { createRegistry } from "../src/registry";
-import { assertUpstreamAllowed } from "../src/ssrf";
-import { fetchUpstream } from "../src/upstream";
+import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import http from 'node:http';
+import {buildServer} from '../src/server';
+import {signProxyToken} from '../src/token';
+import {createRegistry} from '../src/registry';
+import {assertUpstreamAllowed} from '../src/ssrf';
+import {fetchUpstream} from '../src/upstream';
 
 let upstream: http.Server;
 let upstreamPort: number;
 
 const config = {
-  port: 0,
-  proxyDomain: "reviewproxy.app",
-  appOrigin: "http://localhost:3000",
-  databaseUrl: "x",
-  proxyTokenSecret: "secret",
-  upstreamTimeoutMs: 5000,
-  maxHtmlBytes: 1_000_000,
+	port: 0,
+	proxyDomain: 'reviewproxy.app',
+	appOrigin: 'http://localhost:3000',
+	databaseUrl: 'x',
+	proxyTokenSecret: 'secret',
+	upstreamTimeoutMs: 5000,
+	maxHtmlBytes: 1_000_000,
 };
 
 beforeAll(async () => {
-  upstream = http.createServer((req, res) => {
-    res.writeHead(200, { "content-type": "text/html", "x-frame-options": "DENY" });
-    res.end(`<html><head></head><body><a href="http://127.0.0.1:${upstreamPort}/about">about</a></body></html>`);
-  });
-  await new Promise<void>((r) => upstream.listen(0, r));
-  upstreamPort = (upstream.address() as { port: number }).port;
+	upstream = http.createServer((req, res) => {
+		res.writeHead(200, {
+			'content-type': 'text/html',
+			'x-frame-options': 'DENY',
+		});
+		res.end(
+			`<html><head></head><body><a href="http://127.0.0.1:${upstreamPort}/about">about</a></body></html>`,
+		);
+	});
+	await new Promise<void>((r) => upstream.listen(0, r));
+	upstreamPort = (upstream.address() as {port: number}).port;
 });
 afterAll(() => new Promise<void>((r) => upstream.close(() => r())));
 
-describe("review-proxy end to end", () => {
-  it("proxies a framed site: strips XFO, rewrites links, injects runtime", async () => {
-    const targetOrigin = `http://127.0.0.1:${upstreamPort}`;
-    const registry = createRegistry(
-      async (sub) => (sub === "d-aaaa1111"
-        ? { targetOrigin, documentId: "doc1", enabled: true }
-        : null),
-      60_000,
-    );
-    const app = buildServer({
-      config,
-      lookupSite: registry.lookup,
-      assertUpstreamAllowed,
-      fetchUpstream,
-    });
+describe('review-proxy end to end', () => {
+	it('proxies a framed site: strips XFO, rewrites links, injects runtime', async () => {
+		const targetOrigin = `http://127.0.0.1:${upstreamPort}`;
+		const registry = createRegistry(
+			async (sub) =>
+				sub === 'd-aaaa1111'
+					? {targetOrigin, documentId: 'doc1', enabled: true}
+					: null,
+			60_000,
+		);
+		const app = buildServer({
+			config,
+			lookupSite: registry.lookup,
+			assertUpstreamAllowed,
+			fetchUpstream,
+		});
 
-    const token = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "u" }, "secret");
+		const token = signProxyToken(
+			{documentId: 'doc1', subdomain: 'd-aaaa1111', sub: 'u'},
+			'secret',
+		);
 
-    // Token via cookie → 200 HTML.
-    const res = await app.inject({
-      method: "GET",
-      url: "/",
-      headers: { host: "d-aaaa1111.reviewproxy.app", cookie: `__rt=${token}` },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.headers["x-frame-options"]).toBeUndefined();
-    expect(res.body).toContain("d-aaaa1111.reviewproxy.app/about");
-    expect(res.body).toContain("pinion:ready");
+		// Token via cookie → 200 HTML.
+		const res = await app.inject({
+			method: 'GET',
+			url: '/',
+			headers: {
+				host: 'd-aaaa1111.reviewproxy.app',
+				cookie: `__rt=${token}`,
+			},
+		});
+		expect(res.statusCode).toBe(200);
+		expect(res.headers['x-frame-options']).toBeUndefined();
+		expect(res.body).toContain('d-aaaa1111.reviewproxy.app/about');
+		expect(res.body).toContain('pinion:ready');
 
-    // Unknown subdomain → 404.
-    const miss = await app.inject({
-      method: "GET",
-      url: "/",
-      headers: { host: "d-nope0000.reviewproxy.app", cookie: `__rt=${token}` },
-    });
-    expect(miss.statusCode).toBe(404);
+		// Unknown subdomain → 404.
+		const miss = await app.inject({
+			method: 'GET',
+			url: '/',
+			headers: {
+				host: 'd-nope0000.reviewproxy.app',
+				cookie: `__rt=${token}`,
+			},
+		});
+		expect(miss.statusCode).toBe(404);
 
-    // No token → 401.
-    const noTok = await app.inject({
-      method: "GET",
-      url: "/",
-      headers: { host: "d-aaaa1111.reviewproxy.app" },
-    });
-    expect(noTok.statusCode).toBe(401);
+		// No token → 401.
+		const noTok = await app.inject({
+			method: 'GET',
+			url: '/',
+			headers: {host: 'd-aaaa1111.reviewproxy.app'},
+		});
+		expect(noTok.statusCode).toBe(401);
 
-    await app.close();
-  });
+		await app.close();
+	});
 });
 ```
 
@@ -2499,52 +2824,54 @@ Expected: FAIL — `Cannot find module '../src/server'`.
 
 ```ts
 // review-proxy/src/server.ts
-import Fastify, { type FastifyInstance } from "fastify";
-import { Readable } from "node:stream";
-import { handleProxyRequest, type ProxyDeps } from "./proxy-handler";
+import Fastify, {type FastifyInstance} from 'fastify';
+import {Readable} from 'node:stream';
+import {handleProxyRequest, type ProxyDeps} from './proxy-handler';
 
 function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
-  }
-  return out;
+	const out: Record<string, string> = {};
+	if (!header) return out;
+	for (const part of header.split(';')) {
+		const eq = part.indexOf('=');
+		if (eq === -1) continue;
+		out[part.slice(0, eq).trim()] = decodeURIComponent(
+			part.slice(eq + 1).trim(),
+		);
+	}
+	return out;
 }
 
 export function buildServer(deps: ProxyDeps): FastifyInstance {
-  const app = Fastify({ logger: true });
+	const app = Fastify({logger: true});
 
-  app.get("/healthz", async () => ({ ok: true }));
+	app.get('/healthz', async () => ({ok: true}));
 
-  // Single catch-all: every other GET/HEAD is a proxied request.
-  app.route({
-    method: ["GET", "HEAD"],
-    url: "/*",
-    handler: async (req, reply) => {
-      const url = new URL(req.url, "http://placeholder");
-      const result = await handleProxyRequest(
-        {
-          method: req.method,
-          host: req.headers.host ?? "",
-          path: url.pathname,
-          query: url.search.replace(/^\?/, ""),
-          cookies: parseCookies(req.headers.cookie),
-        },
-        deps,
-      );
-      reply.status(result.status);
-      for (const [key, value] of Object.entries(result.headers)) {
-        reply.header(key, value);
-      }
-      if (result.body instanceof Readable) return reply.send(result.body);
-      return reply.send(result.body);
-    },
-  });
+	// Single catch-all: every other GET/HEAD is a proxied request.
+	app.route({
+		method: ['GET', 'HEAD'],
+		url: '/*',
+		handler: async (req, reply) => {
+			const url = new URL(req.url, 'http://placeholder');
+			const result = await handleProxyRequest(
+				{
+					method: req.method,
+					host: req.headers.host ?? '',
+					path: url.pathname,
+					query: url.search.replace(/^\?/, ''),
+					cookies: parseCookies(req.headers.cookie),
+				},
+				deps,
+			);
+			reply.status(result.status);
+			for (const [key, value] of Object.entries(result.headers)) {
+				reply.header(key, value);
+			}
+			if (result.body instanceof Readable) return reply.send(result.body);
+			return reply.send(result.body);
+		},
+	});
 
-  return app;
+	return app;
 }
 ```
 
@@ -2557,41 +2884,41 @@ Expected: PASS.
 
 ```ts
 // review-proxy/src/index.ts
-import "dotenv/config";
-import { MongoClient } from "mongodb";
-import { loadConfig } from "./config";
-import { createRegistry, createMongoFetcher } from "./registry";
-import { assertUpstreamAllowed } from "./ssrf";
-import { fetchUpstream } from "./upstream";
-import { buildServer } from "./server";
+import 'dotenv/config';
+import {MongoClient} from 'mongodb';
+import {loadConfig} from './config';
+import {createRegistry, createMongoFetcher} from './registry';
+import {assertUpstreamAllowed} from './ssrf';
+import {fetchUpstream} from './upstream';
+import {buildServer} from './server';
 
 async function main(): Promise<void> {
-  const config = loadConfig();
-  const mongo = new MongoClient(config.databaseUrl);
-  await mongo.connect();
+	const config = loadConfig();
+	const mongo = new MongoClient(config.databaseUrl);
+	await mongo.connect();
 
-  const registry = createRegistry(createMongoFetcher(mongo), 60_000);
-  const app = buildServer({
-    config,
-    lookupSite: registry.lookup,
-    assertUpstreamAllowed,
-    fetchUpstream,
-  });
+	const registry = createRegistry(createMongoFetcher(mongo), 60_000);
+	const app = buildServer({
+		config,
+		lookupSite: registry.lookup,
+		assertUpstreamAllowed,
+		fetchUpstream,
+	});
 
-  const shutdown = async () => {
-    await app.close();
-    await mongo.close();
-    process.exit(0);
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+	const shutdown = async () => {
+		await app.close();
+		await mongo.close();
+		process.exit(0);
+	};
+	process.on('SIGTERM', shutdown);
+	process.on('SIGINT', shutdown);
 
-  await app.listen({ port: config.port, host: "0.0.0.0" });
+	await app.listen({port: config.port, host: '0.0.0.0'});
 }
 
 main().catch((err) => {
-  console.error("[review-proxy] fatal:", err);
-  process.exit(1);
+	console.error('[review-proxy] fatal:', err);
+	process.exit(1);
 });
 ```
 
@@ -2633,6 +2960,7 @@ Working directory for Part C: `/Users/dorik/projects/review-platform/review-Web`
 ### Task C1: Env vars, `ProxySite` schema, Vitest
 
 **Files:**
+
 - Modify: `review-Web/.env.example`, `review-Web/.env.local`
 - Modify: `review-Web/prisma/schema.prisma`
 - Create: `review-Web/vitest.config.ts`
@@ -2645,14 +2973,9 @@ Append to `review-Web/.env.example`:
 ```
 # Live proxy service (review-proxy)
 # PROXY_DOMAIN: the registrable domain the proxy serves wildcard subdomains on
-# PROXY_TOKEN_SECRET: HMAC secret — MUST match review-proxy's PROXY_TOKEN_SECRET
-PROXY_DOMAIN="reviewproxy.app"
-PROXY_TOKEN_SECRET=""
 ```
 
 - [ ] **Step 2: Add the same two vars to `.env.local`**
-
-Add `PROXY_DOMAIN` (the real proxy domain, or `reviewproxy.app` for dev) and `PROXY_TOKEN_SECRET` — its value **must equal** `review-proxy`'s `.env` `PROXY_TOKEN_SECRET` (Task B1 Step 5).
 
 - [ ] **Step 3: Add the `ProxySite` model to review-Web's Prisma schema**
 
@@ -2683,14 +3006,14 @@ Run: `npm install -D vitest@^4.1.4`
 - [ ] **Step 6: Create `vitest.config.ts`**
 
 ```ts
-import { defineConfig } from "vitest/config";
+import {defineConfig} from 'vitest/config';
 
 export default defineConfig({
-  test: {
-    environment: "node",
-    globals: false,
-    include: ["src/**/*.test.ts"],
-  },
+	test: {
+		environment: 'node',
+		globals: false,
+		include: ['src/**/*.test.ts'],
+	},
 });
 ```
 
@@ -2716,6 +3039,7 @@ git commit -m "chore: add proxy env vars, ProxySite model, vitest"
 Implements the signing half of Contract 2. The code is byte-identical to `review-proxy/src/token.ts`'s `signProxyToken` (Task B4) — verified by the cross-check test below.
 
 **Files:**
+
 - Create: `review-Web/src/lib/proxy-token.ts`
 - Test: `review-Web/src/lib/proxy-token.test.ts`
 
@@ -2723,47 +3047,75 @@ Implements the signing half of Contract 2. The code is byte-identical to `review
 
 ```ts
 // review-Web/src/lib/proxy-token.test.ts
-import { describe, expect, it } from "vitest";
-import crypto from "node:crypto";
-import { signProxyToken } from "./proxy-token";
+import {describe, expect, it} from 'vitest';
+import crypto from 'node:crypto';
+import {signProxyToken} from './proxy-token';
 
-const SECRET = "shared-secret";
+const SECRET = 'shared-secret';
 
 // Mirror of review-proxy/src/token.ts verifyProxyToken — keeps the two repos in lockstep.
-function verify(token: string, secret: string, expectedSubdomain: string, now: number) {
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [body, sig] = parts;
-  const b64url = (b: Buffer) =>
-    b.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-  const expected = b64url(crypto.createHmac("sha256", secret).update(body).digest());
-  if (sig !== expected) return null;
-  const pad = "=".repeat((4 - (body.length % 4)) % 4);
-  const payload = JSON.parse(
-    Buffer.from(body.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64").toString("utf8"),
-  );
-  if (payload.exp < now) return null;
-  if (payload.subdomain !== expectedSubdomain) return null;
-  return payload;
+function verify(
+	token: string,
+	secret: string,
+	expectedSubdomain: string,
+	now: number,
+) {
+	const parts = token.split('.');
+	if (parts.length !== 2) return null;
+	const [body, sig] = parts;
+	const b64url = (b: Buffer) =>
+		b
+			.toString('base64')
+			.replace(/=/g, '')
+			.replace(/\+/g, '-')
+			.replace(/\//g, '_');
+	const expected = b64url(
+		crypto.createHmac('sha256', secret).update(body).digest(),
+	);
+	if (sig !== expected) return null;
+	const pad = '='.repeat((4 - (body.length % 4)) % 4);
+	const payload = JSON.parse(
+		Buffer.from(
+			body.replace(/-/g, '+').replace(/_/g, '/') + pad,
+			'base64',
+		).toString('utf8'),
+	);
+	if (payload.exp < now) return null;
+	if (payload.subdomain !== expectedSubdomain) return null;
+	return payload;
 }
 
-describe("signProxyToken", () => {
-  it("produces a token the proxy's verify logic accepts", () => {
-    const tok = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "user1" }, SECRET);
-    const p = verify(tok, SECRET, "d-aaaa1111", Math.floor(Date.now() / 1000));
-    expect(p.documentId).toBe("doc1");
-    expect(p.sub).toBe("user1");
-  });
+describe('signProxyToken', () => {
+	it("produces a token the proxy's verify logic accepts", () => {
+		const tok = signProxyToken(
+			{documentId: 'doc1', subdomain: 'd-aaaa1111', sub: 'user1'},
+			SECRET,
+		);
+		const p = verify(
+			tok,
+			SECRET,
+			'd-aaaa1111',
+			Math.floor(Date.now() / 1000),
+		);
+		expect(p.documentId).toBe('doc1');
+		expect(p.sub).toBe('user1');
+	});
 
-  it("sets exp roughly two hours out", () => {
-    const before = Math.floor(Date.now() / 1000);
-    const tok = signProxyToken({ documentId: "d", subdomain: "d-aaaa1111", sub: "u" }, SECRET);
-    const p = JSON.parse(
-      Buffer.from(tok.split(".")[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"),
-    );
-    expect(p.exp - before).toBeGreaterThanOrEqual(7190);
-    expect(p.exp - before).toBeLessThanOrEqual(7210);
-  });
+	it('sets exp roughly two hours out', () => {
+		const before = Math.floor(Date.now() / 1000);
+		const tok = signProxyToken(
+			{documentId: 'd', subdomain: 'd-aaaa1111', sub: 'u'},
+			SECRET,
+		);
+		const p = JSON.parse(
+			Buffer.from(
+				tok.split('.')[0].replace(/-/g, '+').replace(/_/g, '/'),
+				'base64',
+			).toString('utf8'),
+		);
+		expect(p.exp - before).toBeGreaterThanOrEqual(7190);
+		expect(p.exp - before).toBeLessThanOrEqual(7210);
+	});
 });
 ```
 
@@ -2776,31 +3128,41 @@ Expected: FAIL — `Cannot find module './proxy-token'`.
 
 ```ts
 // review-Web/src/lib/proxy-token.ts
-import crypto from "node:crypto";
+import crypto from 'node:crypto';
 
 export type ProxyTokenPayload = {
-  documentId: string;
-  subdomain: string;
-  sub: string;
-  iat: number;
-  exp: number;
+	documentId: string;
+	subdomain: string;
+	sub: string;
+	iat: number;
+	exp: number;
 };
 
 function b64urlEncode(buf: Buffer): string {
-  return buf.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+	return buf
+		.toString('base64')
+		.replace(/=/g, '')
+		.replace(/\+/g, '-')
+		.replace(/\//g, '_');
 }
 
 /** Mint a proxy access token (Contract 2). TTL defaults to 2 hours. */
 export function signProxyToken(
-  claims: { documentId: string; subdomain: string; sub: string },
-  secret: string,
-  ttlSeconds = 2 * 60 * 60,
+	claims: {documentId: string; subdomain: string; sub: string},
+	secret: string,
+	ttlSeconds = 2 * 60 * 60,
 ): string {
-  const now = Math.floor(Date.now() / 1000);
-  const payload: ProxyTokenPayload = { ...claims, iat: now, exp: now + ttlSeconds };
-  const body = b64urlEncode(Buffer.from(JSON.stringify(payload), "utf8"));
-  const sig = b64urlEncode(crypto.createHmac("sha256", secret).update(body).digest());
-  return `${body}.${sig}`;
+	const now = Math.floor(Date.now() / 1000);
+	const payload: ProxyTokenPayload = {
+		...claims,
+		iat: now,
+		exp: now + ttlSeconds,
+	};
+	const body = b64urlEncode(Buffer.from(JSON.stringify(payload), 'utf8'));
+	const sig = b64urlEncode(
+		crypto.createHmac('sha256', secret).update(body).digest(),
+	);
+	return `${body}.${sig}`;
 }
 ```
 
@@ -2823,64 +3185,84 @@ git commit -m "feat: add proxy access token minting"
 A route handler that checks document access and returns the iframe's proxy origin, a signed token, and the entry path.
 
 **Files:**
+
 - Create: `review-Web/src/app/api/proxy-token/route.ts`
 
 - [ ] **Step 1: Write the route handler**
 
 ```ts
 // review-Web/src/app/api/proxy-token/route.ts
-import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { resolveAccess } from "@/lib/access";
-import { getCookieUserId } from "@/lib/web-auth";
-import { signProxyToken } from "@/lib/proxy-token";
+import {NextResponse} from 'next/server';
+import {db} from '@/lib/db';
+import {resolveAccess} from '@/lib/access';
+import {getCookieUserId} from '@/lib/web-auth';
+import {signProxyToken} from '@/lib/proxy-token';
 
 // Returns the proxied-iframe session for a website document:
 // { proxyOrigin, token, entryPath }. Authenticated users only (v1).
 export async function GET(req: Request) {
-  const userId = await getCookieUserId();
-  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	const userId = await getCookieUserId();
+	if (!userId)
+		return NextResponse.json({error: 'Unauthorized'}, {status: 401});
 
-  const documentId = new URL(req.url).searchParams.get("documentId");
-  if (!documentId) return NextResponse.json({ error: "Missing documentId" }, { status: 400 });
+	const documentId = new URL(req.url).searchParams.get('documentId');
+	if (!documentId)
+		return NextResponse.json({error: 'Missing documentId'}, {status: 400});
 
-  const doc = await db.document.findUnique({ where: { id: documentId } });
-  if (!doc || doc.deletedAt) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  if (doc.type !== "WEBSITE" || !doc.sourceUrl) {
-    return NextResponse.json({ error: "Not a website document" }, { status: 400 });
-  }
+	const doc = await db.document.findUnique({where: {id: documentId}});
+	if (!doc || doc.deletedAt)
+		return NextResponse.json({error: 'Not found'}, {status: 404});
+	if (doc.type !== 'WEBSITE' || !doc.sourceUrl) {
+		return NextResponse.json(
+			{error: 'Not a website document'},
+			{status: 400},
+		);
+	}
 
-  const role = await resolveAccess(userId, { kind: "document", documentId: doc.id });
-  if (!role) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+	const role = await resolveAccess(userId, {
+		kind: 'document',
+		documentId: doc.id,
+	});
+	if (!role) return NextResponse.json({error: 'Forbidden'}, {status: 403});
 
-  const site = await db.proxySite.findUnique({ where: { documentId: doc.id } });
-  if (!site || !site.enabled) {
-    return NextResponse.json({ error: "Proxy site unavailable" }, { status: 409 });
-  }
+	const site = await db.proxySite.findUnique({where: {documentId: doc.id}});
+	if (!site || !site.enabled) {
+		return NextResponse.json(
+			{error: 'Proxy site unavailable'},
+			{status: 409},
+		);
+	}
 
-  const secret = process.env.PROXY_TOKEN_SECRET;
-  const proxyDomain = process.env.PROXY_DOMAIN;
-  if (!secret || !proxyDomain) {
-    return NextResponse.json({ error: "Proxy not configured" }, { status: 500 });
-  }
+	const secret = process.env.PROXY_TOKEN_SECRET;
+	const proxyDomain = process.env.PROXY_DOMAIN;
+	if (!secret || !proxyDomain) {
+		return NextResponse.json(
+			{error: 'Proxy not configured'},
+			{status: 500},
+		);
+	}
 
-  const token = signProxyToken(
-    { documentId: doc.id, subdomain: site.subdomain, sub: userId },
-    secret,
-  );
+	const token = signProxyToken(
+		{documentId: doc.id, subdomain: site.subdomain, sub: userId},
+		secret,
+	);
 
-  let entryPath = "/";
-  try {
-    const u = new URL(doc.sourceUrl);
-    entryPath = u.pathname + u.search;
-  } catch {
-    // sourceUrl already validated at creation; fall back to "/"
-  }
+	let entryPath = '/';
+	try {
+		const u = new URL(doc.sourceUrl);
+		entryPath = u.pathname + u.search;
+	} catch {
+		// sourceUrl already validated at creation; fall back to "/"
+	}
 
-  return NextResponse.json(
-    { proxyOrigin: `https://${site.subdomain}.${proxyDomain}`, token, entryPath },
-    { headers: { "Cache-Control": "no-store" } },
-  );
+	return NextResponse.json(
+		{
+			proxyOrigin: `https://${site.subdomain}.${proxyDomain}`,
+			token,
+			entryPath,
+		},
+		{headers: {'Cache-Control': 'no-store'}},
+	);
 }
 ```
 
@@ -2911,6 +3293,7 @@ git commit -m "feat: add proxy-token route handler"
 Replace all `contentDocument` access with the Contract 3 `postMessage` protocol. The component's `Props` are unchanged, so `review-workspace.tsx` does not change.
 
 **Files:**
+
 - Create: `review-Web/src/app/app/[orgSlug]/d/[documentId]/use-proxy-session.ts`
 - Replace: `review-Web/src/app/app/[orgSlug]/d/[documentId]/website-viewer.tsx`
 
@@ -2918,29 +3301,29 @@ Replace all `contentDocument` access with the Contract 3 `postMessage` protocol.
 
 ```ts
 // review-Web/src/app/app/[orgSlug]/d/[documentId]/use-proxy-session.ts
-import { useQuery } from "@tanstack/react-query";
+import {useQuery} from '@tanstack/react-query';
 
 export type ProxySession = {
-  proxyOrigin: string;
-  token: string;
-  entryPath: string;
+	proxyOrigin: string;
+	token: string;
+	entryPath: string;
 };
 
 /** Fetch the proxied-iframe session (proxy origin + signed token) for a document. */
 export function useProxySession(documentId: string) {
-  return useQuery<ProxySession>({
-    queryKey: ["proxy-session", documentId],
-    queryFn: async () => {
-      const res = await fetch(
-        `/api/proxy-token?documentId=${encodeURIComponent(documentId)}`,
-        { cache: "no-store" },
-      );
-      if (!res.ok) throw new Error(`proxy-token ${res.status}`);
-      return res.json() as Promise<ProxySession>;
-    },
-    staleTime: 90 * 60 * 1000, // token lives 2h; treat fresh for 90 min
-    retry: 1,
-  });
+	return useQuery<ProxySession>({
+		queryKey: ['proxy-session', documentId],
+		queryFn: async () => {
+			const res = await fetch(
+				`/api/proxy-token?documentId=${encodeURIComponent(documentId)}`,
+				{cache: 'no-store'},
+			);
+			if (!res.ok) throw new Error(`proxy-token ${res.status}`);
+			return res.json() as Promise<ProxySession>;
+		},
+		staleTime: 90 * 60 * 1000, // token lives 2h; treat fresh for 90 min
+		retry: 1,
+	});
 }
 ```
 
@@ -2949,13 +3332,13 @@ export function useProxySession(documentId: string) {
 - [ ] **Step 2: Replace `website-viewer.tsx` entirely**
 
 ```tsx
-"use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
-import { clientFetch } from "@/lib/api-client";
-import { RichTextEditor } from "@/components/comments/rich-text-editor";
-import { useProxySession } from "./use-proxy-session";
-import type { Comment } from "./types";
+'use client';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {toast} from 'sonner';
+import {clientFetch} from '@/lib/api-client';
+import {RichTextEditor} from '@/components/comments/rich-text-editor';
+import {useProxySession} from './use-proxy-session';
+import type {Comment} from './types';
 
 type Props = {
 	initialUrl: string;
@@ -2970,22 +3353,22 @@ type Props = {
 };
 
 const DEVICE_PRESETS = [
-	{ id: "mobile", label: "Mobile", width: 390 },
-	{ id: "tablet", label: "Tablet", width: 768 },
-	{ id: "desktop", label: "Desktop", width: 1440 },
+	{id: 'mobile', label: 'Mobile', width: 390},
+	{id: 'tablet', label: 'Tablet', width: 768},
+	{id: 'desktop', label: 'Desktop', width: 1440},
 ] as const;
-type DeviceId = (typeof DEVICE_PRESETS)[number]["id"];
+type DeviceId = (typeof DEVICE_PRESETS)[number]['id'];
 
 type IframeMessage =
-	| { type: "pinion:ready"; width: number; height: number; pageUrl: string }
+	| {type: 'pinion:ready'; width: number; height: number; pageUrl: string}
 	| {
-			type: "pinion:positions";
-			positions: Record<string, { x: number; y: number; visible: boolean }>;
+			type: 'pinion:positions';
+			positions: Record<string, {x: number; y: number; visible: boolean}>;
 			docHeight: number;
 			pageUrl: string;
 	  }
 	| {
-			type: "pinion:click";
+			type: 'pinion:click';
 			selector: string;
 			path: string;
 			textHash: string;
@@ -2995,7 +3378,7 @@ type IframeMessage =
 			y: number;
 			pageUrl: string;
 	  }
-	| { type: "pinion:page-url"; pageUrl: string };
+	| {type: 'pinion:page-url'; pageUrl: string};
 
 type Pending = {
 	x: number;
@@ -3022,20 +3405,20 @@ export function WebsiteViewer({
 	const frameRef = useRef<HTMLIFrameElement>(null);
 	const composerFileRef = useRef<HTMLInputElement>(null);
 
-	const [device, setDevice] = useState<DeviceId>("desktop");
+	const [device, setDevice] = useState<DeviceId>('desktop');
 	const [iframeLoaded, setIframeLoaded] = useState(false);
 	const [reloadNonce, setReloadNonce] = useState(0);
 	const [pinPositions, setPinPositions] = useState<
-		Record<string, { x: number; y: number; visible: boolean }>
+		Record<string, {x: number; y: number; visible: boolean}>
 	>({});
 	const [pending, setPending] = useState<Pending | null>(null);
-	const [draft, setDraft] = useState("");
-	const [draftAttachment, setDraftAttachment] = useState("");
+	const [draft, setDraft] = useState('');
+	const [draftAttachment, setDraftAttachment] = useState('');
 	const [posting, setPosting] = useState(false);
 
 	const deviceWidth = DEVICE_PRESETS.find((d) => d.id === device)!.width;
 
-	const { data: session, isLoading, isError } = useProxySession(documentId);
+	const {data: session, isLoading, isError} = useProxySession(documentId);
 
 	// Root comments scoped to the current page (null pageUrl = any page).
 	const rootComments = useMemo(
@@ -3056,9 +3439,9 @@ export function WebsiteViewer({
 	// Entry iframe src — built once per session; never reassigned on navigation
 	// (client-side navigation happens inside the iframe; §8).
 	const iframeSrc = useMemo(() => {
-		if (!session) return "";
-		const u = new URL(session.entryPath || "/", session.proxyOrigin);
-		u.searchParams.set("__rt", session.token);
+		if (!session) return '';
+		const u = new URL(session.entryPath || '/', session.proxyOrigin);
+		u.searchParams.set('__rt', session.token);
 		return u.toString();
 	}, [session]);
 
@@ -3074,7 +3457,7 @@ export function WebsiteViewer({
 	// Push comments + mode into the iframe whenever they change.
 	const syncIframe = useCallback(() => {
 		postToIframe({
-			type: "pinion:set-comments",
+			type: 'pinion:set-comments',
 			comments: rootComments.map((c) => ({
 				id: c.id,
 				selector: c.elementSelector,
@@ -3085,8 +3468,8 @@ export function WebsiteViewer({
 			})),
 		});
 		postToIframe({
-			type: "pinion:set-mode",
-			mode: canAddPins ? "comment" : "read",
+			type: 'pinion:set-mode',
+			mode: canAddPins ? 'comment' : 'read',
 		});
 	}, [postToIframe, rootComments, canAddPins]);
 
@@ -3101,13 +3484,13 @@ export function WebsiteViewer({
 			if (e.origin !== session!.proxyOrigin) return;
 			if (e.source !== frameRef.current?.contentWindow) return;
 			const msg = e.data as IframeMessage;
-			if (!msg || typeof msg !== "object") return;
-			if (msg.type === "pinion:ready") {
+			if (!msg || typeof msg !== 'object') return;
+			if (msg.type === 'pinion:ready') {
 				setIframeLoaded(true);
 				onPageUrlChange(msg.pageUrl);
-			} else if (msg.type === "pinion:positions") {
+			} else if (msg.type === 'pinion:positions') {
 				setPinPositions(msg.positions);
-			} else if (msg.type === "pinion:click") {
+			} else if (msg.type === 'pinion:click') {
 				if (!canAddPins) return;
 				setPending({
 					x: msg.x,
@@ -3119,14 +3502,14 @@ export function WebsiteViewer({
 					yPct: msg.yPct,
 					pageUrl: msg.pageUrl,
 				});
-				setDraft("");
-			} else if (msg.type === "pinion:page-url") {
+				setDraft('');
+			} else if (msg.type === 'pinion:page-url') {
 				onPageUrlChange(msg.pageUrl);
 				setPending(null);
 			}
 		}
-		window.addEventListener("message", onMessage);
-		return () => window.removeEventListener("message", onMessage);
+		window.addEventListener('message', onMessage);
+		return () => window.removeEventListener('message', onMessage);
 	}, [session, canAddPins, onPageUrlChange]);
 
 	async function submitPending() {
@@ -3135,8 +3518,8 @@ export function WebsiteViewer({
 		try {
 			const iframe = frameRef.current;
 			const res = await clientFetch(`/comments`, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
+				method: 'POST',
+				headers: {'content-type': 'application/json'},
 				body: JSON.stringify({
 					documentId,
 					body: draft.trim(),
@@ -3153,14 +3536,14 @@ export function WebsiteViewer({
 			});
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));
-				toast.error(data.error?.message ?? "Could not post comment");
+				toast.error(data.error?.message ?? 'Could not post comment');
 				return;
 			}
 			const created: Comment = await res.json();
 			onCommentCreated(created);
 			setPending(null);
-			setDraft("");
-			setDraftAttachment("");
+			setDraft('');
+			setDraftAttachment('');
 		} finally {
 			setPosting(false);
 		}
@@ -3169,12 +3552,12 @@ export function WebsiteViewer({
 	async function attachComposerFile(e: React.ChangeEvent<HTMLInputElement>) {
 		const file = e.target.files?.[0];
 		if (!file) return;
-		if (!file.type.startsWith("image/")) {
-			toast.error("Only images can be attached");
+		if (!file.type.startsWith('image/')) {
+			toast.error('Only images can be attached');
 			return;
 		}
 		if (file.size > 1_200_000) {
-			toast.error("Image must be under 1.2 MB");
+			toast.error('Image must be under 1.2 MB');
 			return;
 		}
 		const reader = new FileReader();
@@ -3197,10 +3580,15 @@ export function WebsiteViewer({
 						key={p.id}
 						onClick={() => setDevice(p.id)}
 						className={`px-2 py-0.5 rounded ${
-							device === p.id ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+							device === p.id
+								? 'bg-primary text-primary-foreground'
+								: 'hover:bg-accent'
 						}`}
 					>
-						{p.label} <span className="text-[10px] opacity-70">{p.width}</span>
+						{p.label}{' '}
+						<span className="text-[10px] opacity-70">
+							{p.width}
+						</span>
 					</button>
 				))}
 				<button
@@ -3210,7 +3598,12 @@ export function WebsiteViewer({
 					aria-label="Reload site"
 					disabled={!iframeLoaded}
 				>
-					<span className={iframeLoaded ? "" : "inline-block animate-spin"} aria-hidden>
+					<span
+						className={
+							iframeLoaded ? '' : 'inline-block animate-spin'
+						}
+						aria-hidden
+					>
 						↻
 					</span>
 				</button>
@@ -3218,7 +3611,9 @@ export function WebsiteViewer({
 					{currentPageUrl}
 				</span>
 				<span className="text-xs text-muted-foreground shrink-0">
-					{canAddPins ? "Click on the page to add a pin" : "Read mode"}
+					{canAddPins
+						? 'Click on the page to add a pin'
+						: 'Read mode'}
 				</span>
 			</div>
 			<div className="relative flex-1 overflow-auto flex justify-center">
@@ -3231,19 +3626,28 @@ export function WebsiteViewer({
 						Preparing preview…
 					</div>
 				) : (
-					<div className="relative h-full" style={{ width: deviceWidth }}>
+					<div
+						className="relative h-full"
+						style={{width: deviceWidth}}
+					>
 						<iframe
 							ref={frameRef}
 							key={`${iframeSrc}#${reloadNonce}`}
 							src={iframeSrc}
-							style={{ width: deviceWidth, opacity: iframeLoaded ? 1 : 0, transition: "opacity 150ms ease" }}
+							style={{
+								width: deviceWidth,
+								opacity: iframeLoaded ? 1 : 0,
+								transition: 'opacity 150ms ease',
+							}}
 							className="bg-white shadow-lg block h-full"
 						/>
 						{!iframeLoaded && (
 							<div className="absolute inset-0 flex items-center justify-center pointer-events-none">
 								<div className="flex flex-col items-center gap-3">
 									<div className="w-8 h-8 rounded-full border-2 border-muted-foreground/30 border-t-primary animate-spin" />
-									<div className="text-sm text-muted-foreground">Loading site…</div>
+									<div className="text-sm text-muted-foreground">
+										Loading site…
+									</div>
 								</div>
 							</div>
 						)}
@@ -3253,19 +3657,19 @@ export function WebsiteViewer({
 								if (!pos || !pos.visible) return null;
 								const num = numberById.get(c.id) ?? 0;
 								const isActive = activeThreadId === c.id;
-								const resolved = c.status === "RESOLVED";
+								const resolved = c.status === 'RESOLVED';
 								return (
 									<button
 										key={c.id}
 										onClick={() => onPinClick(c.id)}
 										className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full w-7 h-7 text-xs font-semibold shadow-md flex items-center justify-center pointer-events-auto transition ${
 											resolved
-												? "bg-green-500 text-white opacity-70"
+												? 'bg-green-500 text-white opacity-70'
 												: isActive
-													? "bg-yellow-400 text-black ring-2 ring-yellow-200"
-													: "bg-primary text-primary-foreground"
+													? 'bg-yellow-400 text-black ring-2 ring-yellow-200'
+													: 'bg-primary text-primary-foreground'
 										}`}
-										style={{ left: pos.x, top: pos.y }}
+										style={{left: pos.x, top: pos.y}}
 									>
 										{num}
 									</button>
@@ -3274,7 +3678,7 @@ export function WebsiteViewer({
 							{pending && (
 								<div
 									className="absolute -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-yellow-400 ring-2 ring-yellow-200"
-									style={{ left: pending.x, top: pending.y }}
+									style={{left: pending.x, top: pending.y}}
 								/>
 							)}
 						</div>
@@ -3301,7 +3705,7 @@ export function WebsiteViewer({
 							/>
 							<button
 								type="button"
-								onClick={() => setDraftAttachment("")}
+								onClick={() => setDraftAttachment('')}
 								className="absolute right-1 top-1 rounded-full bg-foreground/80 text-background w-5 h-5 flex items-center justify-center text-xs hover:bg-foreground"
 								aria-label="Remove attachment"
 							>
@@ -3328,8 +3732,8 @@ export function WebsiteViewer({
 							<button
 								onClick={() => {
 									setPending(null);
-									setDraft("");
-									setDraftAttachment("");
+									setDraft('');
+									setDraftAttachment('');
 								}}
 								className="border rounded-md px-3 py-1.5 text-sm"
 							>
@@ -3340,7 +3744,7 @@ export function WebsiteViewer({
 								disabled={posting || !draft.trim()}
 								className="bg-primary text-primary-foreground rounded-md px-3 py-1.5 text-sm disabled:opacity-50"
 							>
-								{posting ? "Posting…" : "Post"}
+								{posting ? 'Posting…' : 'Post'}
 							</button>
 						</div>
 					</div>
@@ -3352,6 +3756,7 @@ export function WebsiteViewer({
 ```
 
 Notes on the rewrite:
+
 - `genSelector` / `buildPath` / `textHash` / `findByPath` / `resolveElement` / `proxyUrlFor` / `navigateTo` / `recomputePins` are **removed** — pin anchoring now runs inside the iframe runtime (Task B9).
 - `initialUrl` stays in `Props` (the parent passes it) but is unused; the entry path comes from the proxy-token route. Keep the prop to avoid touching `review-workspace.tsx`.
 - The pin overlay is a sibling of the `<iframe>` inside a `position: relative` box sized to the iframe, so reported viewport coordinates map directly to `left`/`top`.
@@ -3373,6 +3778,7 @@ git commit -m "feat: rewire website viewer to postMessage proxy"
 ### Task C5: E2E verification, CHIPS check, and cleanup of superseded routes
 
 **Files:**
+
 - Delete: `review-Web/src/app/api/iframe-render/route.ts`, `review-Web/src/app/api/proxy/route.ts`
 - Delete (in `review_api`): `review_api/src/routes/dom.ts`, `review_api/src/routes/asset-proxy.ts`, `review_api/src/routes/proxy.ts`, `review_api/src/routes/render.ts` — **only after** Step 3 confirms each is unreferenced.
 

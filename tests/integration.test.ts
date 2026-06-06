@@ -2,7 +2,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import { buildServer } from "../src/server";
-import { signProxyToken } from "../src/token";
 import { createRegistry } from "../src/registry";
 import { fetchUpstream } from "../src/upstream";
 
@@ -14,7 +13,6 @@ const config = {
   proxyDomain: "reviewproxy.app",
   appOrigin: "http://localhost:3000",
   databaseUrl: "x",
-  proxyTokenSecret: "secret",
   upstreamTimeoutMs: 5000,
   maxHtmlBytes: 1_000_000,
   publicScheme: "https",
@@ -65,13 +63,11 @@ describe("review-proxy end to end", () => {
       fetchUpstream,
     });
 
-    const token = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "u" }, "secret");
-
-    // Token via cookie → 200 HTML.
+    // Any visitor (no token) → 200 HTML.
     const res = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "d-aaaa1111.reviewproxy.app", cookie: `__rt=${token}` },
+      headers: { host: "d-aaaa1111.reviewproxy.app" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers["x-frame-options"]).toBeUndefined();
@@ -82,17 +78,9 @@ describe("review-proxy end to end", () => {
     const miss = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "d-nope0000.reviewproxy.app", cookie: `__rt=${token}` },
+      headers: { host: "d-nope0000.reviewproxy.app" },
     });
     expect(miss.statusCode).toBe(404);
-
-    // No token → 401.
-    const noTok = await app.inject({
-      method: "GET",
-      url: "/",
-      headers: { host: "d-aaaa1111.reviewproxy.app" },
-    });
-    expect(noTok.statusCode).toBe(401);
 
     await app.close();
   });
@@ -110,14 +98,11 @@ describe("review-proxy end to end", () => {
       assertUpstreamAllowed: async () => {},
       fetchUpstream,
     });
-    const token = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "u" }, "secret");
-
     const res = await app.inject({
       method: "POST",
       url: "/api/echo",
       headers: {
         host: "d-aaaa1111.reviewproxy.app",
-        cookie: `__rt=${token}`,
         "content-type": "application/json",
       },
       payload: '{"hello":"world"}',

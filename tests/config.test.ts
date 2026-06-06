@@ -7,7 +7,6 @@ const base = {
   PROXY_DOMAIN: "reviewproxy.app",
   APP_ORIGIN: "http://localhost:3000",
   DATABASE_URL: "mongodb://localhost/db",
-  PROXY_TOKEN_SECRET: "secret",
   UPSTREAM_TIMEOUT_MS: "20000",
   MAX_HTML_BYTES: "15000000",
 };
@@ -27,14 +26,13 @@ describe("loadConfig", () => {
       PROXY_DOMAIN: "reviewproxy.app",
       APP_ORIGIN: "http://localhost:3000",
       DATABASE_URL: "mongodb://localhost/db",
-      PROXY_TOKEN_SECRET: "secret",
     });
     expect(c.port).toBe(8080);
     expect(c.upstreamTimeoutMs).toBe(20000);
     expect(c.maxHtmlBytes).toBe(15000000);
   });
 
-  it.each(["PROXY_DOMAIN", "APP_ORIGIN", "DATABASE_URL", "PROXY_TOKEN_SECRET"])(
+  it.each(["PROXY_DOMAIN", "APP_ORIGIN", "DATABASE_URL"])(
     "throws when required var %s is missing",
     (key) => {
       const env = { ...base } as Record<string, string>;

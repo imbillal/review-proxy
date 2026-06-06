@@ -60,7 +60,7 @@ const BROWSER_UA =
 
 // Request headers never forwarded upstream: hop-by-hop, length (undici
 // recomputes it), encoding (the proxy controls it), and anything that would
-// leak the proxy's own auth (the __rt cookie) or a mismatched origin.
+// leak a mismatched origin.
 const REQUEST_HEADER_DENYLIST = new Set([
   "host",
   "cookie",

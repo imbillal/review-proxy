@@ -1,5 +1,12 @@
 # Live Subdomain Reverse Proxy for Website Review — Design
 
+> **⚠️ Superseded in part (2026-06-06): the `__rt` access-token layer was removed.**
+> The proxy is now **open** — access is gated only by the request's subdomain resolving
+> to an *enabled* `ProxySite` registry entry (the SSRF re-check stays). Everything below
+> describing the HMAC token (`PROXY_TOKEN_SECRET`, `signProxyToken`/`verifyProxyToken`,
+> the `__rt` query param/cookie, and "Link expired") no longer reflects the code. The
+> registry/subdomain/SSRF/rewrite/overlay design is unchanged.
+
 **Date:** 2026-05-22
 **Status:** Draft — awaiting review
 **Repo:** `review-proxy` (new), with changes in `review_api` and `review-Web`
@@ -34,12 +41,12 @@ stored HTML.
 
 Locked in during brainstorming (`2026-05-22`):
 
-| Decision | Choice | Reason |
-|---|---|---|
-| Rendering model | **Live reverse proxy** | Always fresh; no headless browser; cheapest infra. |
-| URL structure | **Subdomain per site** | `/about`, `/_next/static/...`, runtime `fetch('/api')` resolve back into the proxy automatically — no rewriting needed for relative/absolute-path URLs. |
-| Runtime | **Dedicated Node service**, hosted on Render | Streaming proxy, full control; own git repo. |
-| Proxy domain | **Separate registrable domain** (not a subdomain of the app domain) | Security boundary for untrusted third-party content (cf. `githubusercontent.com`); also satisfies Render's wildcard-domain requirement. |
+| Decision        | Choice                                                              | Reason                                                                                                                                                  |
+| --------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rendering model | **Live reverse proxy**                                              | Always fresh; no headless browser; cheapest infra.                                                                                                      |
+| URL structure   | **Subdomain per site**                                              | `/about`, `/_next/static/...`, runtime `fetch('/api')` resolve back into the proxy automatically — no rewriting needed for relative/absolute-path URLs. |
+| Runtime         | **Dedicated Node service**, hosted on Render                        | Streaming proxy, full control; own git repo.                                                                                                            |
+| Proxy domain    | **Separate registrable domain** (not a subdomain of the app domain) | Security boundary for untrusted third-party content (cf. `githubusercontent.com`); also satisfies Render's wildcard-domain requirement.                 |
 
 **Accepted trade-off:** a live proxy re-fetches each view, so a dynamic page can render slightly
 differently between visits and DOM-anchored pins can drift. Mitigated by multi-strategy pin
@@ -78,11 +85,11 @@ anchoring (§9). This was chosen with eyes open over the snapshot model.
 
 Three codebases:
 
-| Codebase | Role |
-|---|---|
-| `review-proxy` (new) | The proxy service. Fetch, rewrite, stream. |
-| `review_api` | `ProxySite` registry model + subdomain allocation on document creation. |
-| `review-Web` | `website-viewer.tsx` rewired to `postMessage`; mints the proxy access token. |
+| Codebase             | Role                                                                         |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `review-proxy` (new) | The proxy service. Fetch, rewrite, stream.                                   |
+| `review_api`         | `ProxySite` registry model + subdomain allocation on document creation.      |
+| `review-Web`         | `website-viewer.tsx` rewired to `postMessage`; mints the proxy access token. |
 
 `<proxydomain>` is a domain to be registered. This document uses **`reviewproxy.app`** as a
 stand-in; the real name is chosen at implementation time and stored in env.
@@ -95,9 +102,9 @@ stand-in; the real name is chosen at implementation time and stored in env.
 
 - Register a dedicated domain (stand-in: `reviewproxy.app`).
 - Point apex + wildcard at the Render service per Render's wildcard-domain docs:
-  - `*` → `<service>.onrender.com`
-  - `_acme-challenge` → `<service-id>.verify.renderdns.com`
-  - `_cf-custom-hostname` → `<service-id>.hostname.renderdns.com`
+    - `*` → `<service>.onrender.com`
+    - `_acme-challenge` → `<service-id>.verify.renderdns.com`
+    - `_cf-custom-hostname` → `<service-id>.hostname.renderdns.com`
 - Render auto-provisions and renews a wildcard Let's Encrypt certificate. No Caddy needed because
   Render terminates TLS.
 
@@ -108,13 +115,12 @@ Node service. Per-request lifecycle in §5. Stack chosen in the implementation p
 
 Environment:
 
-| Var | Purpose |
-|---|---|
-| `PROXY_DOMAIN` | e.g. `reviewproxy.app` — used to parse the subdomain and to rewrite URLs. |
-| `DATABASE_URL` | Read-only access to the shared MongoDB (registry lookups). |
-| `PROXY_TOKEN_SECRET` | Shared HMAC secret; verifies access tokens minted by `review-Web`. |
-| `UPSTREAM_TIMEOUT_MS` | Default `20000`. |
-| `MAX_HTML_BYTES` | Default `15_000_000`. |
+| Var                   | Purpose                                                                   |
+| --------------------- | ------------------------------------------------------------------------- |
+| `PROXY_DOMAIN`        | e.g. `reviewproxy.app` — used to parse the subdomain and to rewrite URLs. |
+| `DATABASE_URL`        | Read-only access to the shared MongoDB (registry lookups).                |
+| `UPSTREAM_TIMEOUT_MS` | Default `20000`.                                                          |
+| `MAX_HTML_BYTES`      | Default `15_000_000`.                                                     |
 
 ### 4.3 Site registry — `ProxySite` (review_api)
 
@@ -156,7 +162,7 @@ official `mongodb` driver (not Prisma — keeps the proxy lightweight) and cache
 with a ~60 s TTL. The registry changes rarely; a stale-for-60s read is acceptable. Lookups are a
 single indexed query on `subdomain`.
 
-*Alternative considered:* an internal HTTP endpoint on `review_api`. Rejected for v1 — adds a
+_Alternative considered:_ an internal HTTP endpoint on `review_api`. Rejected for v1 — adds a
 network hop and a second service dependency on the hot path for no real decoupling benefit, since
 both services already share the database.
 
@@ -166,8 +172,7 @@ The proxied content is usually public, but the proxy must not be loadable by any
 
 - When a reviewer opens a website document, `review-Web` checks document access (it already does
   this for auth + guest links) and **mints a short-lived signed token**: HMAC-SHA256 over
-  `{ documentId, subdomain, sub: userId|guestId, exp }` using `PROXY_TOKEN_SECRET`. Expiry ~2 h.
-- The iframe's initial `src` carries `?__rt=<token>`.
+  `{ documentId, subdomain, sub: userId|guestId, exp }`
 - The proxy verifies the token (signature, expiry, subdomain match). On success it sets the token
   as a cookie so later navigations and asset requests are authorized without the query param:
   `Set-Cookie: __rt=<token>; Secure; HttpOnly; SameSite=None; Partitioned` and then 302-redirects
@@ -194,18 +199,18 @@ For `GET https://d-ab12cd34.reviewproxy.app/about?x=1`:
 5. **SSRF re-check** — resolve the upstream host; reject private / link-local / metadata IPs even
    though `targetOrigin` was validated at registration (DNS-rebinding defense, §10).
 6. **Fetch upstream** with `undici`:
-   - Methods: **GET and HEAD only** in v1 (POST/forms are §16 Out of scope).
-   - Request headers sent: a real browser `User-Agent`, `Accept`, `Accept-Language`,
-     `Accept-Encoding`; the proxy's stored upstream cookies for this site, if any. **Never** the
-     review-platform's own cookies/headers.
-   - `redirect: "manual"`, `UPSTREAM_TIMEOUT_MS` timeout, body cap `MAX_HTML_BYTES` for HTML.
+    - Methods: **GET and HEAD only** in v1 (POST/forms are §16 Out of scope).
+    - Request headers sent: a real browser `User-Agent`, `Accept`, `Accept-Language`,
+      `Accept-Encoding`; the proxy's stored upstream cookies for this site, if any. **Never** the
+      review-platform's own cookies/headers.
+    - `redirect: "manual"`, `UPSTREAM_TIMEOUT_MS` timeout, body cap `MAX_HTML_BYTES` for HTML.
 7. **Branch on the response:**
-   - **3xx** — rewrite `Location` (§7). Same-origin → proxy subdomain + new path. Cross-origin →
-     §7 policy. Cap the redirect chain at 10 → 508 on loop.
-   - **HTML** (`text/html`) — rewrite (§6), inject the runtime, return.
-   - **CSS** (`text/css`) — rewrite absolute same-origin `url(...)` references; CSS files are
-     small enough to buffer.
-   - **Everything else** (JS, images, fonts, JSON, …) — stream through unmodified.
+    - **3xx** — rewrite `Location` (§7). Same-origin → proxy subdomain + new path. Cross-origin →
+      §7 policy. Cap the redirect chain at 10 → 508 on loop.
+    - **HTML** (`text/html`) — rewrite (§6), inject the runtime, return.
+    - **CSS** (`text/css`) — rewrite absolute same-origin `url(...)` references; CSS files are
+      small enough to buffer.
+    - **Everything else** (JS, images, fonts, JSON, …) — stream through unmodified.
 8. **Rewrite response headers** (all responses) — §7.
 9. **Stream** to the client. Use chunked transfer (drop upstream `Content-Length`) whenever the
    body was modified.
@@ -228,24 +233,24 @@ acceptable fallback if streaming proves fiddly — decided in the implementation
 
 **Injected before `</body>`:** the **overlay runtime** (`overlay-runtime.ts`, §9).
 
-**URL attributes rewritten** — if the URL is absolute *and* its origin equals the site's
+**URL attributes rewritten** — if the URL is absolute _and_ its origin equals the site's
 `targetOrigin`, rewrite the origin to the proxy subdomain. If the origin is a different host, apply
 the §7 cross-origin policy.
 
-| Element | Attributes |
-|---|---|
-| `<a>`, `<link>`, `<area>` | `href` |
-| `<img>`, `<script>`, `<iframe>`, `<source>`, `<video>`, `<audio>`, `<track>`, `<embed>` | `src` |
-| `<img>`, `<source>` | `srcset` (rewrite each candidate) |
-| `<video>` | `poster` |
-| `<form>` | `action` |
-| `<button>`, `<input>` | `formaction` |
-| `<object>` | `data` |
-| SVG `<use>`, `<image>` | `href`, `xlink:href` |
-| any element | `style` attribute (`url(...)`) |
-| `<base>` | `href` — rewrite if the upstream page sets one |
-| `<meta http-equiv="refresh">` | the URL in `content` |
-| `<style>` element body | `url(...)` |
+| Element                                                                                 | Attributes                                     |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `<a>`, `<link>`, `<area>`                                                               | `href`                                         |
+| `<img>`, `<script>`, `<iframe>`, `<source>`, `<video>`, `<audio>`, `<track>`, `<embed>` | `src`                                          |
+| `<img>`, `<source>`                                                                     | `srcset` (rewrite each candidate)              |
+| `<video>`                                                                               | `poster`                                       |
+| `<form>`                                                                                | `action`                                       |
+| `<button>`, `<input>`                                                                   | `formaction`                                   |
+| `<object>`                                                                              | `data`                                         |
+| SVG `<use>`, `<image>`                                                                  | `href`, `xlink:href`                           |
+| any element                                                                             | `style` attribute (`url(...)`)                 |
+| `<base>`                                                                                | `href` — rewrite if the upstream page sets one |
+| `<meta http-equiv="refresh">`                                                           | the URL in `content`                           |
+| `<style>` element body                                                                  | `url(...)`                                     |
 
 **Stripped:** `integrity` attributes on `<link>` / `<script>` (rewriting or proxying breaks
 sub-resource integrity hashes).
@@ -264,7 +269,7 @@ point at the proxy origin.
 `Strict-Transport-Security`, `Permissions-Policy`.
 
 **`Set-Cookie`** — rewrite the `Domain` attribute to the proxy subdomain host (or drop `Domain` so
-it defaults to that host); keep `Path`; force `Secure`. These are the *upstream site's* cookies,
+it defaults to that host); keep `Path`; force `Secure`. These are the _upstream site's_ cookies,
 scoped to that one subdomain — site A cannot read site B's cookies because they are different
 origins.
 
@@ -274,11 +279,11 @@ origins.
 
 **Cross-origin resources policy (v1):**
 
-| Resource origin | Policy |
-|---|---|
-| The site's own `targetOrigin` | Rewrite to the proxy subdomain → flows through the proxy. |
-| Third-party CDN static assets (images, fonts, CSS, JS) | **Left as direct absolute URLs.** Loaded straight from the CDN. Tag-loaded images/CSS/JS need no CORS; most font CDNs send permissive CORS. Keeps proxy bandwidth down. |
-| Third-party API / `fetch` / XHR endpoints | Left direct; may CORS-fail. For a *visual* review tool a failed background API call rarely breaks the visible layout. A documented limitation; a per-origin asset-proxy is §16 v2. |
+| Resource origin                                        | Policy                                                                                                                                                                             |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The site's own `targetOrigin`                          | Rewrite to the proxy subdomain → flows through the proxy.                                                                                                                          |
+| Third-party CDN static assets (images, fonts, CSS, JS) | **Left as direct absolute URLs.** Loaded straight from the CDN. Tag-loaded images/CSS/JS need no CORS; most font CDNs send permissive CORS. Keeps proxy bandwidth down.            |
+| Third-party API / `fetch` / XHR endpoints              | Left direct; may CORS-fail. For a _visual_ review tool a failed background API call rarely breaks the visible layout. A documented limitation; a per-origin asset-proxy is §16 v2. |
 
 ---
 
@@ -310,19 +315,19 @@ this section confirms the contract.
 
 **iframe → parent:**
 
-| Message | Payload |
-|---|---|
-| `pinion:ready` | runtime booted; document dimensions |
-| `pinion:positions` | pin coordinates + current page height |
-| `pinion:click` | new-pin location + element anchor data |
-| `pinion:page-url` | client-side navigation occurred; new `pageUrl` |
+| Message            | Payload                                        |
+| ------------------ | ---------------------------------------------- |
+| `pinion:ready`     | runtime booted; document dimensions            |
+| `pinion:positions` | pin coordinates + current page height          |
+| `pinion:click`     | new-pin location + element anchor data         |
+| `pinion:page-url`  | client-side navigation occurred; new `pageUrl` |
 
 **parent → iframe:**
 
-| Message | Payload |
-|---|---|
+| Message               | Payload                                 |
+| --------------------- | --------------------------------------- |
 | `pinion:set-comments` | comments to render for the current page |
-| `pinion:set-mode` | whether pin-adding is enabled |
+| `pinion:set-mode`     | whether pin-adding is enabled           |
 
 **Origin checks:** the parent accepts messages only when `event.origin` ends in `<proxydomain>`
 **and** `event.source === iframe.contentWindow`. The runtime accepts messages only from the app
@@ -362,15 +367,15 @@ coordinates) absorbs the small layout differences a live proxy can produce betwe
 Every error response is a small self-contained HTML page that **includes the overlay runtime
 stub**, so the parent still receives `pinion:ready` and does not hang.
 
-| Condition | Status | Page |
-|---|---|---|
-| Unknown / disabled subdomain | 404 | "This review link is not available." |
-| Missing / invalid token | 401 | "This review link has expired." |
-| Upstream DNS fail / connection refused | 502 | "Couldn't reach the site." + Retry |
-| Upstream timeout (> `UPSTREAM_TIMEOUT_MS`) | 504 | "The site took too long to respond." + Retry |
-| Body over `MAX_HTML_BYTES` | 502 | "This page is too large to preview." |
-| Redirect loop (> 10 hops) | 508 | "This page redirects in a loop." |
-| Upstream 4xx / 5xx | passthrough | upstream body shown, framing headers still stripped |
+| Condition                                  | Status      | Page                                                |
+| ------------------------------------------ | ----------- | --------------------------------------------------- |
+| Unknown / disabled subdomain               | 404         | "This review link is not available."                |
+| Missing / invalid token                    | 401         | "This review link has expired."                     |
+| Upstream DNS fail / connection refused     | 502         | "Couldn't reach the site." + Retry                  |
+| Upstream timeout (> `UPSTREAM_TIMEOUT_MS`) | 504         | "The site took too long to respond." + Retry        |
+| Body over `MAX_HTML_BYTES`                 | 502         | "This page is too large to preview."                |
+| Redirect loop (> 10 hops)                  | 508         | "This page redirects in a loop."                    |
+| Upstream 4xx / 5xx                         | passthrough | upstream body shown, framing headers still stripped |
 
 ---
 
@@ -384,12 +389,10 @@ stub**, so the parent still receives `pinion:ready` and does not hang.
 ## 13. Changes in `review-Web`
 
 - `website-viewer.tsx`:
-  - iframe `src` = `https://<subdomain>.<proxydomain>/<entry-path>?__rt=<token>`.
-  - Remove **all** `contentDocument` access and parent-side DOM walking.
-  - Add the `postMessage` listener/sender per §9; render pin markers in the parent DOM from
-    `pinion:positions`; sync route state from `pinion:page-url`.
-- Add a route/server action that checks document access and returns a signed proxy token
-  (`PROXY_TOKEN_SECRET` in `review-Web`'s env).
+    - iframe `src` = `https://<subdomain>.<proxydomain>/<entry-path>?__rt=<token>`.
+    - Remove **all** `contentDocument` access and parent-side DOM walking.
+    - Add the `postMessage` listener/sender per §9; render pin markers in the parent DOM from
+      `pinion:positions`; sync route state from `pinion:page-url`.
 - **Candidate deletions** (confirm during implementation): the old `api/iframe-render`,
   `api/proxy`, `api/dom-render`, `api/iframe-proxy`, `api/asset-proxy` Next routes that belonged to
   superseded approaches.
@@ -402,7 +405,6 @@ stub**, so the parent still receives `pinion:ready` and does not hang.
   ~10-minute uptime pinger); **Render Starter ($7/mo)** before real reviewers use it — it removes
   spin-down and raises CPU to 0.5.
 - Dedicated proxy domain with wildcard DNS + Render-managed wildcard TLS (§4.1).
-- Proxy env vars per §4.2; `review-Web` and `review-proxy` share `PROXY_TOKEN_SECRET`.
 
 ---
 

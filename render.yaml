@@ -46,10 +46,6 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      # Must be identical to PROXY_TOKEN_SECRET in the web app, or every
-      # proxy token fails verification ("Link expired").
-      - key: PROXY_TOKEN_SECRET
-        sync: false
       - key: UPSTREAM_TIMEOUT_MS
         value: "20000"
       - key: MAX_HTML_BYTES

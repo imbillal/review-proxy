@@ -4,7 +4,6 @@ import type { Config } from "./config";
 import type { SiteRecord } from "./registry";
 import type { UpstreamResponse } from "./upstream";
 import { parseSubdomain } from "./subdomain";
-import { verifyProxyToken } from "./token";
 import { rewriteHtml } from "./html-rewrite";
 import { rewriteCss } from "./css-rewrite";
 import { sanitizeResponseHeaders, rewriteSetCookie, rewriteLocation } from "./headers";
@@ -107,55 +106,20 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
   const site = await deps.lookupSite(subdomain);
   if (!site || !site.enabled) return htmlError("UNKNOWN_SUBDOMAIN", appOrigin);
 
-  // 3. Authenticate.
-  const params = new URLSearchParams(req.query);
-  const queryToken = params.get("__rt");
-  // A query token is a deliberate fresh entry minted by the app, so it wins over
-  // any cookie. Preferring the cookie would strand a viewer on a stale cookie
-  // from an earlier session (expired or for another document) — the fresh token
-  // would be ignored and every reload would 401 "Link expired".
-  const token = queryToken ?? req.cookies["__rt"] ?? "";
-  const payload = verifyProxyToken(token, config.proxyTokenSecret, subdomain);
-  if (!payload || payload.documentId !== site.documentId) {
-    return htmlError("BAD_TOKEN", appOrigin);
-  }
-  // If the token arrived via the query string on a navigation, persist it as the
-  // cookie and 302 to a clean URL. This also overwrites a stale cookie. Only
-  // GET/HEAD — a 302 would drop a POST/PUT body.
-  if (
-    (req.method === "GET" || req.method === "HEAD") &&
-    queryToken &&
-    req.cookies["__rt"] !== queryToken
-  ) {
-    params.delete("__rt");
-    const clean = req.path + (params.toString() ? `?${params.toString()}` : "");
-    return {
-      status: 302,
-      headers: {
-        location: clean,
-        "set-cookie": `__rt=${queryToken}; Path=/; Secure; HttpOnly; SameSite=None; Partitioned`,
-        "cache-control": "no-store",
-      },
-      body: "",
-    };
-  }
-
-  // 4. Build the upstream URL.
-  const cleanQuery = (() => {
-    params.delete("__rt");
-    const s = params.toString();
-    return s ? `?${s}` : "";
-  })();
+  // 3. Build the upstream URL. The proxy is open: access is gated only by the
+  // subdomain resolving to an enabled registry entry — there is no per-viewer
+  // token. The query string passes through to the upstream unchanged.
+  const cleanQuery = req.query ? `?${req.query}` : "";
   const upstreamUrl = site.targetOrigin + req.path + cleanQuery;
 
-  // 5. SSRF re-check (DNS rebinding).
+  // 4. SSRF re-check (DNS rebinding).
   try {
     await deps.assertUpstreamAllowed(upstreamUrl);
   } catch {
     return htmlError("UPSTREAM_UNREACHABLE", appOrigin);
   }
 
-  // 6. Fetch upstream. Rewrite the proxy host → target host in the request body
+  // 5. Fetch upstream. Rewrite the proxy host → target host in the request body
   // so the upstream's self-lookups (e.g. CMS getSiteByDomain) resolve (§ above).
   const outBody = rewriteRequestBody(
     req.body,
@@ -194,7 +158,7 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
     headers["set-cookie"] = list.map((c) => rewriteSetCookie(c, proxyHost)) as unknown as string;
   }
 
-  // 7. Branch on the response.
+  // 6. Branch on the response.
   // 3xx — rewrite Location.
   if (upstream.statusCode >= 300 && upstream.statusCode < 400) {
     const loc = upstream.headers["location"];

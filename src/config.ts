@@ -4,7 +4,6 @@ export type Config = {
   proxyDomain: string;
   appOrigin: string;
   databaseUrl: string;
-  proxyTokenSecret: string;
   upstreamTimeoutMs: number;
   maxHtmlBytes: number;
   // Public-facing origin the proxy is reached at, used to rewrite same-origin
@@ -33,7 +32,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     proxyDomain: required(env, "PROXY_DOMAIN").toLowerCase(),
     appOrigin: required(env, "APP_ORIGIN").replace(/\/$/, ""),
     databaseUrl: required(env, "DATABASE_URL"),
-    proxyTokenSecret: required(env, "PROXY_TOKEN_SECRET"),
     upstreamTimeoutMs: intOr(env.UPSTREAM_TIMEOUT_MS, 20000),
     maxHtmlBytes: intOr(env.MAX_HTML_BYTES, 15_000_000),
     publicScheme: (env.PUBLIC_SCHEME ?? "https").toLowerCase(),
