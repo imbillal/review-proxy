@@ -158,10 +158,35 @@ export function buildOverlayRuntime(appOrigin: string): string {
 `.trim();
 }
 
-/** Best-effort neutralizer injected at the start of <head> (§6). */
+/**
+ * Best-effort neutralizer injected at the start of <head> (§6). Runs before any
+ * page script. Two jobs:
+ *  1. Hide that we're framed (frameElement/document.domain).
+ *  2. Shim localStorage/sessionStorage. In a cross-site iframe with third-party
+ *     storage blocked, even *reading* `window.localStorage` throws SecurityError;
+ *     SPAs that touch storage on boot then crash (e.g. Next.js client exception →
+ *     "page could not be loaded"). When the real storage is unusable we install an
+ *     in-memory fallback so the page renders. Non-persistent, which is fine for a
+ *     review preview. No-op when storage works (first-party / unblocked).
+ */
 export const FRAME_BUST_SCRIPT = `
 (function(){
   try { Object.defineProperty(window,"frameElement",{get:function(){return null;},configurable:true}); } catch(e){}
   try { Object.defineProperty(document,"domain",{get:function(){return location.hostname;},set:function(){},configurable:true}); } catch(e){}
+  function shimStorage(name){
+    try { var s=window[name]; s.setItem("__pinion_probe","1"); s.removeItem("__pinion_probe"); return; } catch(e){}
+    var m=Object.create(null);
+    var store={
+      getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(m,k)?m[k]:null;},
+      setItem:function(k,v){m[String(k)]=String(v);},
+      removeItem:function(k){delete m[String(k)];},
+      clear:function(){m=Object.create(null);},
+      key:function(i){var ks=Object.keys(m);return (i>=0&&i<ks.length)?ks[i]:null;}
+    };
+    try { Object.defineProperty(store,"length",{get:function(){return Object.keys(m).length;}}); } catch(e){}
+    try { Object.defineProperty(window,name,{value:store,configurable:true,writable:true}); } catch(e){}
+  }
+  shimStorage("localStorage");
+  shimStorage("sessionStorage");
 })();
 `.trim();
