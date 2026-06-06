@@ -1,8 +1,38 @@
 // review-proxy/tests/proxy-handler.test.ts
 import { describe, expect, it } from "vitest";
 import { Readable } from "node:stream";
-import { handleProxyRequest, type ProxyDeps } from "../src/proxy-handler";
+import { handleProxyRequest, rewriteRequestBody, type ProxyDeps } from "../src/proxy-handler";
 import { signProxyToken } from "../src/token";
+
+describe("rewriteRequestBody", () => {
+  const proxyHost = "d-ab12cd34.reviewproxy.app";
+  const target = "https://billal.dev";
+  const json = { "content-type": "application/json" };
+
+  it("rewrites the proxy host → target host in a JSON body (CMS self-lookup)", () => {
+    const body = Buffer.from(JSON.stringify({ variables: { domain: proxyHost } }));
+    const out = rewriteRequestBody(body, json, proxyHost, "", target);
+    expect(out!.toString()).toBe(JSON.stringify({ variables: { domain: "billal.dev" } }));
+  });
+
+  it("also rewrites the host:port form (dev) before the bare host", () => {
+    const body = Buffer.from(`{"a":"${proxyHost}:8080","b":"${proxyHost}"}`);
+    const out = rewriteRequestBody(body, json, proxyHost, "8080", target);
+    expect(out!.toString()).toBe(`{"a":"billal.dev","b":"billal.dev"}`);
+  });
+
+  it("leaves non-textual bodies (uploads) untouched", () => {
+    const body = Buffer.from(proxyHost);
+    const out = rewriteRequestBody(body, { "content-type": "image/png" }, proxyHost, "", target);
+    expect(out).toBe(body);
+  });
+
+  it("is a no-op when the body doesn't mention the proxy host", () => {
+    const body = Buffer.from('{"hello":"world"}');
+    const out = rewriteRequestBody(body, json, proxyHost, "", target);
+    expect(out).toBe(body);
+  });
+});
 
 const config = {
   port: 8080,

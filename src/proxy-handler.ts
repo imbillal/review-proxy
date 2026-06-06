@@ -48,6 +48,53 @@ function htmlError(kind: ErrorKind, appOrigin: string): ProxyResponse {
   return { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }, body };
 }
 
+// Request bodies we may host-rewrite. Binary uploads (images, octet-stream,
+// multipart) are left untouched.
+const REWRITABLE_REQUEST_BODY =
+  /application\/json|application\/graphql|application\/x-www-form-urlencoded|text\//i;
+
+function headerValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string,
+): string | undefined {
+  const v = headers?.[name];
+  return Array.isArray(v) ? v[0] : v;
+}
+
+/**
+ * Rewrite the proxy's own host → the upstream host inside a textual request body.
+ *
+ * SPAs frequently resolve *themselves* by `window.location.hostname` — e.g. a CMS
+ * `getSiteByDomain(domain)` lookup. Through the proxy that hostname is the proxy
+ * subdomain (`d-x.proxy.example.com`), which the upstream's CMS doesn't recognize,
+ * so it 404s and the app renders its own "could not be loaded" error. Swapping the
+ * proxy host back to the real target host makes those self-lookups resolve.
+ * No-op for non-textual bodies or bodies that don't mention the proxy host.
+ */
+export function rewriteRequestBody(
+  body: Buffer | undefined,
+  headers: Record<string, string | string[] | undefined> | undefined,
+  proxyHost: string,
+  publicPort: string,
+  targetOrigin: string,
+): Buffer | undefined {
+  if (!body || body.length === 0) return body;
+  const ct = headerValue(headers, "content-type") ?? "";
+  if (!REWRITABLE_REQUEST_BODY.test(ct)) return body;
+  let targetHost: string;
+  try {
+    targetHost = new URL(targetOrigin).host;
+  } catch {
+    return body;
+  }
+  const text = body.toString("utf8");
+  let out = text;
+  // location.host (with dev port) before the bare location.hostname.
+  if (publicPort) out = out.split(`${proxyHost}:${publicPort}`).join(targetHost);
+  out = out.split(proxyHost).join(targetHost);
+  return out === text ? body : Buffer.from(out, "utf8");
+}
+
 export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Promise<ProxyResponse> {
   const { config } = deps;
   const appOrigin = config.appOrigin;
@@ -108,14 +155,22 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
     return htmlError("UPSTREAM_UNREACHABLE", appOrigin);
   }
 
-  // 6. Fetch upstream.
+  // 6. Fetch upstream. Rewrite the proxy host → target host in the request body
+  // so the upstream's self-lookups (e.g. CMS getSiteByDomain) resolve (§ above).
+  const outBody = rewriteRequestBody(
+    req.body,
+    req.requestHeaders,
+    `${subdomain}.${config.proxyDomain}`,
+    config.publicPort,
+    site.targetOrigin,
+  );
   let upstream: UpstreamResponse;
   try {
     upstream = await deps.fetchUpstream(upstreamUrl, {
       method: req.method,
       timeoutMs: config.upstreamTimeoutMs,
       maxBytes: config.maxHtmlBytes,
-      body: req.body,
+      body: outBody,
       requestHeaders: req.requestHeaders,
     });
   } catch (e) {
