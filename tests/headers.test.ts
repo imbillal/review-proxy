@@ -10,6 +10,7 @@ describe("sanitizeResponseHeaders", () => {
       "content-security-policy": "default-src 'none'",
       "strict-transport-security": "max-age=1",
       "content-length": "123",
+      "transfer-encoding": "chunked",
       "cache-control": "no-store",
     });
     expect(out["content-type"]).toBe("text/html");
@@ -18,6 +19,10 @@ describe("sanitizeResponseHeaders", () => {
     expect(out["content-security-policy"]).toBeUndefined();
     expect(out["strict-transport-security"]).toBeUndefined();
     expect(out["content-length"]).toBeUndefined();
+    // The proxy buffers and re-emits bodies, so the framework re-adds
+    // Content-Length. Forwarding the upstream's chunked transfer-encoding would
+    // then yield both headers — illegal per RFC 7230 and rejected by strict edges.
+    expect(out["transfer-encoding"]).toBeUndefined();
   });
 });
 

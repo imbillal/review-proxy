@@ -11,6 +11,12 @@ const STRIP = new Set([
   "strict-transport-security",
   "permissions-policy",
   "content-length",
+  // transfer-encoding: the proxy buffers and re-emits every body (rewritten HTML/
+  // CSS, or a fresh stream for passthrough), so the framework sets its own framing.
+  // Forwarding the upstream's `transfer-encoding: chunked` leaves it alongside the
+  // re-added Content-Length → "Content-Length can't be present with Transfer-
+  // Encoding". Browsers tolerate it; strict HTTP edges (Render) reject the response.
+  "transfer-encoding",
   // NOTE: content-encoding is intentionally NOT stripped here. Passthrough
   // (non-HTML/CSS) bodies are streamed still-compressed, so the browser needs
   // the header to decode them. The HTML/CSS branches of the handler delete it
