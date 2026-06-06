@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { rewriteCss } from "../src/css-rewrite";
 
 const ORIGIN = "https://dorik.com";
-const PROXY = "d-ab12cd34.reviewproxy.app";
+const PROXY = "https://d-ab12cd34.reviewproxy.app";
 
 describe("rewriteCss", () => {
   it("rewrites a same-origin absolute url()", () => {

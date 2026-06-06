@@ -17,6 +17,8 @@ const config = {
   proxyTokenSecret: "secret",
   upstreamTimeoutMs: 5000,
   maxHtmlBytes: 1_000_000,
+  publicScheme: "https",
+  publicPort: "",
 };
 
 beforeAll(async () => {

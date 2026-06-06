@@ -4,7 +4,7 @@ import { rewriteHtml } from "../src/html-rewrite";
 
 const OPTS = {
   targetOrigin: "https://dorik.com",
-  proxyHost: "d-ab12cd34.reviewproxy.app",
+  proxyBase: "https://d-ab12cd34.reviewproxy.app",
   frameBustScript: "/*fb*/",
   runtimeScript: "/*rt*/",
 };

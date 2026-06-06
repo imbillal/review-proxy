@@ -40,10 +40,10 @@ export function rewriteSetCookie(cookie: string, proxyHost: string): string {
   return out;
 }
 
-/** Rewrite a redirect Location: same-origin → proxy host; cross-origin unchanged. */
-export function rewriteLocation(location: string, targetOrigin: string, proxyHost: string): string {
+/** Rewrite a redirect Location: same-origin → proxy origin; cross-origin unchanged. */
+export function rewriteLocation(location: string, targetOrigin: string, proxyBase: string): string {
   if (/^https?:\/\//i.test(location) || location.startsWith("//")) {
-    return rewriteUrl(location, targetOrigin, proxyHost);
+    return rewriteUrl(location, targetOrigin, proxyBase);
   }
   return location; // relative — resolves to the proxy origin already
 }

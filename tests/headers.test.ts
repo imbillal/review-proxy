@@ -30,12 +30,12 @@ describe("rewriteSetCookie", () => {
 });
 
 describe("rewriteLocation", () => {
-  it("rewrites a same-origin redirect to the proxy host", () => {
-    expect(rewriteLocation("https://dorik.com/next", "https://dorik.com", "d-ab12cd34.reviewproxy.app"))
+  it("rewrites a same-origin redirect to the proxy origin", () => {
+    expect(rewriteLocation("https://dorik.com/next", "https://dorik.com", "https://d-ab12cd34.reviewproxy.app"))
       .toBe("https://d-ab12cd34.reviewproxy.app/next");
   });
   it("leaves a cross-origin redirect unchanged", () => {
-    expect(rewriteLocation("https://other.com/x", "https://dorik.com", "d-ab12cd34.reviewproxy.app"))
+    expect(rewriteLocation("https://other.com/x", "https://dorik.com", "https://d-ab12cd34.reviewproxy.app"))
       .toBe("https://other.com/x");
   });
 });

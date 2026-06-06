@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { rewriteUrl, rewriteSrcset } from "../src/rewrite-url";
 
 const ORIGIN = "https://dorik.com";
-const PROXY = "d-ab12cd34.reviewproxy.app";
+const PROXY = "https://d-ab12cd34.reviewproxy.app";
 
 describe("rewriteUrl", () => {
   it("rewrites an absolute same-origin URL to the proxy host", () => {
@@ -16,9 +16,15 @@ describe("rewriteUrl", () => {
       .toBe("https://d-ab12cd34.reviewproxy.app/logo.png");
   });
 
-  it("rewrites a same-origin URL whose origin has an explicit port, dropping the port", () => {
+  it("adopts the proxy origin's scheme and port (prod: https, no port)", () => {
     expect(rewriteUrl("http://127.0.0.1:8080/about", "http://127.0.0.1:8080", PROXY))
       .toBe("https://d-ab12cd34.reviewproxy.app/about");
+  });
+
+  it("keeps the dev scheme and port when the proxy base is http://host:8080", () => {
+    const devProxy = "http://d-ab12cd34.localhost:8080";
+    expect(rewriteUrl("https://dorik.com/pricing", ORIGIN, devProxy))
+      .toBe("http://d-ab12cd34.localhost:8080/pricing");
   });
 
   it.each(["/about", "./x", "../y", "page.html", ""])(

@@ -63,17 +63,22 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
   // 3. Authenticate.
   const params = new URLSearchParams(req.query);
   const queryToken = params.get("__rt");
-  const token = req.cookies["__rt"] ?? queryToken ?? "";
+  // A query token is a deliberate fresh entry minted by the app, so it wins over
+  // any cookie. Preferring the cookie would strand a viewer on a stale cookie
+  // from an earlier session (expired or for another document) — the fresh token
+  // would be ignored and every reload would 401 "Link expired".
+  const token = queryToken ?? req.cookies["__rt"] ?? "";
   const payload = verifyProxyToken(token, config.proxyTokenSecret, subdomain);
   if (!payload || payload.documentId !== site.documentId) {
     return htmlError("BAD_TOKEN", appOrigin);
   }
-  // If the token came via the query string on a navigation, set the cookie and
-  // 302 to a clean URL. Only GET/HEAD — a 302 would drop a POST/PUT body.
+  // If the token arrived via the query string on a navigation, persist it as the
+  // cookie and 302 to a clean URL. This also overwrites a stale cookie. Only
+  // GET/HEAD — a 302 would drop a POST/PUT body.
   if (
     (req.method === "GET" || req.method === "HEAD") &&
     queryToken &&
-    !req.cookies["__rt"]
+    req.cookies["__rt"] !== queryToken
   ) {
     params.delete("__rt");
     const clean = req.path + (params.toString() ? `?${params.toString()}` : "");
@@ -121,6 +126,10 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
   }
 
   const proxyHost = `${subdomain}.${config.proxyDomain}`;
+  // Full public origin for URL rewriting (scheme + host + port). proxyHost stays
+  // bare for the cookie Domain attribute, which must be a hostname only.
+  const proxyScheme = config.publicScheme || "https";
+  const proxyBase = `${proxyScheme}://${proxyHost}${config.publicPort ? `:${config.publicPort}` : ""}`;
   const headers = sanitizeResponseHeaders(upstream.headers);
 
   // Rewrite Set-Cookie (may be one or many).
@@ -137,7 +146,7 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
     const out: Record<string, string | string[]> = { ...headers };
     delete out["content-encoding"]; // redirect body is empty
     if (typeof loc === "string") {
-      out["location"] = rewriteLocation(loc, site.targetOrigin, proxyHost);
+      out["location"] = rewriteLocation(loc, site.targetOrigin, proxyBase);
     }
     return { status: upstream.statusCode, headers: out, body: "" };
   }
@@ -146,7 +155,7 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
   if (/text\/html|application\/xhtml\+xml/i.test(upstream.contentType) && upstream.bodyText != null) {
     const rewritten = rewriteHtml(upstream.bodyText, {
       targetOrigin: site.targetOrigin,
-      proxyHost,
+      proxyBase,
       frameBustScript: FRAME_BUST_SCRIPT,
       runtimeScript: buildOverlayRuntime(appOrigin),
     });
@@ -162,7 +171,7 @@ export async function handleProxyRequest(req: ProxyRequest, deps: ProxyDeps): Pr
     return {
       status: upstream.statusCode,
       headers,
-      body: rewriteCss(upstream.bodyText, site.targetOrigin, proxyHost),
+      body: rewriteCss(upstream.bodyText, site.targetOrigin, proxyBase),
     };
   }
 

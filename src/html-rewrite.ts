@@ -5,7 +5,7 @@ import { rewriteCss } from "./css-rewrite";
 
 export type RewriteHtmlOptions = {
   targetOrigin: string;
-  proxyHost: string;
+  proxyBase: string;
   frameBustScript: string;
   runtimeScript: string;
 };
@@ -22,9 +22,9 @@ const URL_ATTRS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 export function rewriteHtml(html: string, opts: RewriteHtmlOptions): string {
-  const { targetOrigin, proxyHost, frameBustScript, runtimeScript } = opts;
+  const { targetOrigin, proxyBase, frameBustScript, runtimeScript } = opts;
   const $ = cheerio.load(html);
-  const rw = (u: string) => rewriteUrl(u, targetOrigin, proxyHost);
+  const rw = (u: string) => rewriteUrl(u, targetOrigin, proxyBase);
 
   for (const [selector, attr] of URL_ATTRS) {
     $(selector).each((_, el) => {
@@ -35,7 +35,7 @@ export function rewriteHtml(html: string, opts: RewriteHtmlOptions): string {
 
   $("img[srcset], source[srcset]").each((_, el) => {
     const v = $(el).attr("srcset");
-    if (v != null) $(el).attr("srcset", rewriteSrcset(v, targetOrigin, proxyHost));
+    if (v != null) $(el).attr("srcset", rewriteSrcset(v, targetOrigin, proxyBase));
   });
 
   $("use, image").each((_, el) => {
@@ -62,13 +62,13 @@ export function rewriteHtml(html: string, opts: RewriteHtmlOptions): string {
   // Inline style="" attributes.
   $("[style]").each((_, el) => {
     const v = $(el).attr("style");
-    if (v != null) $(el).attr("style", rewriteCss(v, targetOrigin, proxyHost));
+    if (v != null) $(el).attr("style", rewriteCss(v, targetOrigin, proxyBase));
   });
 
   // <style> element bodies.
   $("style").each((_, el) => {
     const css = $(el).html();
-    if (css != null) $(el).html(rewriteCss(css, targetOrigin, proxyHost));
+    if (css != null) $(el).html(rewriteCss(css, targetOrigin, proxyBase));
   });
 
   // Sub-resource integrity breaks once we rewrite/proxy.

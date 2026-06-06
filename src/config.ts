@@ -7,6 +7,12 @@ export type Config = {
   proxyTokenSecret: string;
   upstreamTimeoutMs: number;
   maxHtmlBytes: number;
+  // Public-facing origin the proxy is reached at, used to rewrite same-origin
+  // absolute URLs in proxied bodies. Production terminates TLS upstream, so the
+  // default is https with no explicit port. Local dev sets PUBLIC_SCHEME=http +
+  // PUBLIC_PORT=8080 so rewritten links keep the dev scheme and port.
+  publicScheme: string;
+  publicPort: string;
 };
 
 function required(env: Record<string, string | undefined>, key: string): string {
@@ -30,5 +36,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     proxyTokenSecret: required(env, "PROXY_TOKEN_SECRET"),
     upstreamTimeoutMs: intOr(env.UPSTREAM_TIMEOUT_MS, 20000),
     maxHtmlBytes: intOr(env.MAX_HTML_BYTES, 15_000_000),
+    publicScheme: (env.PUBLIC_SCHEME ?? "https").toLowerCase(),
+    publicPort: env.PUBLIC_PORT ?? "",
   };
 }

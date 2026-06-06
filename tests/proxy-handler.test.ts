@@ -12,6 +12,8 @@ const config = {
   proxyTokenSecret: "secret",
   upstreamTimeoutMs: 5000,
   maxHtmlBytes: 1_000_000,
+  publicScheme: "https",
+  publicPort: "",
 };
 
 function deps(over: Partial<ProxyDeps> = {}): ProxyDeps {
@@ -30,6 +32,9 @@ function deps(over: Partial<ProxyDeps> = {}): ProxyDeps {
 }
 
 const goodToken = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "u" }, "secret");
+// A cookie left over from an earlier session — signed with a now-rotated secret,
+// so it fails verification (stands in for any expired/foreign stale cookie).
+const staleToken = signProxyToken({ documentId: "doc1", subdomain: "d-aaaa1111", sub: "u" }, "old-secret");
 
 describe("handleProxyRequest", () => {
   it("404s an unknown subdomain", async () => {
@@ -56,6 +61,40 @@ describe("handleProxyRequest", () => {
     expect(r.status).toBe(302);
     expect(r.headers["location"]).toBe("/about");
     expect(String(r.headers["set-cookie"])).toContain("__rt=");
+  });
+
+  it("lets a fresh query token override a stale cookie (302 + refreshed cookie)", async () => {
+    const r = await handleProxyRequest(
+      {
+        method: "GET",
+        host: "d-aaaa1111.reviewproxy.app",
+        path: "/about",
+        query: `__rt=${goodToken}`,
+        cookies: { __rt: staleToken },
+      },
+      deps(),
+    );
+    expect(r.status).toBe(302);
+    expect(r.headers["location"]).toBe("/about");
+    // The cookie is rewritten to the fresh token, not left on the stale one.
+    expect(String(r.headers["set-cookie"])).toContain(`__rt=${goodToken}`);
+  });
+
+  it("401s when only a stale cookie is present and no fresh query token", async () => {
+    const r = await handleProxyRequest(
+      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/", query: "", cookies: { __rt: staleToken } },
+      deps(),
+    );
+    expect(r.status).toBe(401);
+  });
+
+  it("rewrites same-origin links with the dev scheme and port when configured", async () => {
+    const r = await handleProxyRequest(
+      { method: "GET", host: "d-aaaa1111.reviewproxy.app", path: "/", query: "", cookies: { __rt: goodToken } },
+      deps({ config: { ...config, publicScheme: "http", publicPort: "8080" } }),
+    );
+    expect(r.status).toBe(200);
+    expect(String(r.body)).toContain("http://d-aaaa1111.reviewproxy.app:8080/x");
   });
 
   it("proxies HTML, strips framing headers, rewrites same-origin links, injects the runtime", async () => {
