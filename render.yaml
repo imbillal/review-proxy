@@ -37,6 +37,11 @@ services:
       - key: PROXY_DOMAIN
         sync: false
       # Origin of the deployed web app, e.g. https://app.example.com.
+      # MUST exactly match the origin the builder/viewer is served from —
+      # scheme + host including any `www.` (and port). It is the postMessage
+      # targetOrigin for the injected overlay; a www/non-www or scheme mismatch
+      # makes the browser silently drop every pinion:* message, so the review
+      # iframe loads but spins on "Loading…" forever.
       - key: APP_ORIGIN
         sync: false
       - key: DATABASE_URL
