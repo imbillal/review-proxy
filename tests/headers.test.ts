@@ -79,34 +79,4 @@ describe("buildUpstreamHeaders", () => {
     expect(h["x-real-ip"]).toBeUndefined();
     expect(h["accept-language"]).toBe("en-US");
   });
-
-  it("strips browser fingerprint client-hint/fetch-metadata headers so the upstream's bot check doesn't see a 'spoofed Chrome'", () => {
-    // The proxy fetches via undici (a non-Chrome network fingerprint). Forwarding
-    // a real browser's perfect 'I am Chrome' headers (sec-ch-ua*, sec-fetch-*,
-    // priority) makes Cloudflare flag the mismatch and serve a challenge. A
-    // simple, header-light request (what curl sends) gets the real page — so we
-    // drop these and present as a plain client.
-    const h = buildUpstreamHeaders(undefined, {
-      "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124"',
-      "sec-ch-ua-mobile": "?0",
-      "sec-ch-ua-platform": '"macOS"',
-      "sec-ch-ua-full-version-list": '"Chromium";v="124.0.0.0"',
-      "sec-fetch-dest": "iframe",
-      "sec-fetch-mode": "navigate",
-      "sec-fetch-site": "cross-site",
-      "sec-fetch-user": "?1",
-      priority: "u=0, i",
-      "accept-language": "en-GB", // a normal header still passes through
-    });
-    expect(h["sec-ch-ua"]).toBeUndefined();
-    expect(h["sec-ch-ua-mobile"]).toBeUndefined();
-    expect(h["sec-ch-ua-platform"]).toBeUndefined();
-    expect(h["sec-ch-ua-full-version-list"]).toBeUndefined();
-    expect(h["sec-fetch-dest"]).toBeUndefined();
-    expect(h["sec-fetch-mode"]).toBeUndefined();
-    expect(h["sec-fetch-site"]).toBeUndefined();
-    expect(h["sec-fetch-user"]).toBeUndefined();
-    expect(h["priority"]).toBeUndefined();
-    expect(h["accept-language"]).toBe("en-GB");
-  });
 });

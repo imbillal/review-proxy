@@ -84,27 +84,10 @@ const REQUEST_HEADER_DENYLIST = new Set([
   "x-real-ip",
   "true-client-ip",
   "cdn-loop",
-  // Browser fingerprint hint. Forwarded alongside the proxy's undici (non-Chrome)
-  // network fingerprint, a perfect "I am Chrome" header set makes anti-bot edges
-  // (Cloudflare) flag a spoofed browser and serve a challenge. We present as a
-  // plain client instead — see the sec-ch-/sec-fetch- prefixes below.
-  "priority",
 ]);
 
-// Any header in these families is also infra/forwarding noise (or browser
-// fingerprint hints) and is dropped. `sec-ch-*` (client hints) and `sec-fetch-*`
-// (fetch metadata) are what let Cloudflare's bot check tell a real Chrome from
-// the proxy's undici fetch; dropping them makes upstream requests look like the
-// simple client that reliably gets the real page.
-const DENY_PREFIXES = [
-  "x-forwarded-",
-  "cf-",
-  "x-render-",
-  "render-",
-  "x-vercel-",
-  "sec-ch-",
-  "sec-fetch-",
-];
+// Any header in these families is also infra/forwarding noise and is dropped.
+const DENY_PREFIXES = ["x-forwarded-", "cf-", "x-render-", "render-", "x-vercel-"];
 
 function isForwardedHeader(key: string): boolean {
   return REQUEST_HEADER_DENYLIST.has(key) || DENY_PREFIXES.some((p) => key.startsWith(p));
