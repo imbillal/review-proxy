@@ -26,6 +26,25 @@ export function rewriteHtml(html: string, opts: RewriteHtmlOptions): string {
   const $ = cheerio.load(html);
   const rw = (u: string) => rewriteUrl(u, targetOrigin, proxyBase);
 
+  // Cloudflare's bot-challenge / "JavaScript Detections" injection. Left in place
+  // it runs inside the frame, fails its verify callback through the proxy, and
+  // flips the real page to a "Just a moment…" interstitial. The proxy already
+  // fetched the real page server-side, so we drop it and let the content render.
+  // Cloudflare injects it two ways: a direct <script src=".../cdn-cgi/challenge-
+  // platform/..."> and an inline loader that sets window.__CF$cv$params and
+  // appends jsd/main.js. Remove both.
+  $("script").each((_, el) => {
+    const src = $(el).attr("src") ?? "";
+    const code = $(el).html() ?? "";
+    if (
+      src.includes("/cdn-cgi/challenge-platform") ||
+      code.includes("/cdn-cgi/challenge-platform") ||
+      code.includes("__CF$cv$params")
+    ) {
+      $(el).remove();
+    }
+  });
+
   for (const [selector, attr] of URL_ATTRS) {
     $(selector).each((_, el) => {
       const v = $(el).attr(attr);

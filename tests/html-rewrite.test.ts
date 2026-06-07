@@ -32,6 +32,24 @@ describe("rewriteHtml", () => {
     expect(out).toContain("https://d-ab12cd34.reviewproxy.app/a.png 1x");
   });
 
+  it("removes Cloudflare's challenge-platform script (inline loader + src) so it can't flip the framed page to an interstitial", () => {
+    // The inline form is what live Cloudflare actually injects: an inline script
+    // that sets window.__CF$cv$params and appends the jsd/main.js loader.
+    const out = rewriteHtml(
+      `<html><head>` +
+        `<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>` +
+        `<script>(function(){window.__CF$cv$params={r:'abc',t:'xyz'};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);})();</script>` +
+        `<script src="/app.js"></script>` +
+        `</head><body><h1>Real coffee page</h1></body></html>`,
+      OPTS,
+    );
+    expect(out).not.toContain("cdn-cgi/challenge-platform");
+    expect(out).not.toContain("__CF$cv$params");
+    // The real page and unrelated scripts survive.
+    expect(out).toContain("Real coffee page");
+    expect(out).toContain("/app.js");
+  });
+
   it("strips integrity and CSP/XFO meta tags", () => {
     const out = rewriteHtml(
       `<head><meta http-equiv="Content-Security-Policy" content="x">` +
